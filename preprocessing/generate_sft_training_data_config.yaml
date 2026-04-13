@@ -1,0 +1,83 @@
+# ================================================
+# Train Data Generation Config
+# ================================================
+
+# ---------- Model ----------
+model:
+  # name: "/app/models/qwen3.5-9b/"
+    name: "/app/models/gemma4-E4B/"
+# ---------- Data ----------
+data:
+  input_path: "/app/dataset/sllm_all_ready.jsonl"
+  output_path: "/app/dataset/preprocessed/sllm_ready_generated_prompts_gemma4.json"
+
+training_max_length: 8192 
+
+generation:
+  num_proc: 8
+  batch_size: 1000
+  chunk_thresholds: [12, 10, 8, 6, 4] 
+  target_total_training_samples: 100
+  
+# ---------- Prompt ----------
+prompt:
+  yaml_path: "./sft_data_generation_prompts_edited.yaml"
+
+# ---------- Negative Sampling Settings ----------
+negatives:
+  include_no_relationship: True
+  # If True, ALL orphan pairs become "no_relationship"
+
+# ---------- Fewshot Settings ----------
+fewshot:
+  # sample_size: 1
+  seed: 42
+  min_pairs: 8
+  max_pairs: 12
+  prioritize_rare: True
+
+# ---------- Tasks ----------
+tasks:
+  - "NER_NER"
+  - "NER_BEE"
+  - "NER_BEE_TRUE_ONLY"
+
+# ---------- Modes ----------
+modes:
+  system_only:
+    enable_description: false
+    few_shot: false
+    summarize_description: false
+    reasoning: false
+
+  full_detailed:
+    enable_description: true
+    few_shot: true
+    summarize_description: false
+    reasoning: false
+
+  full_summary:
+    enable_description: true
+    few_shot: true
+    summarize_description: true
+    reasoning: false
+
+  no_fewshot:
+    enable_description: true
+    few_shot: false
+    summarize_description: false
+    reasoning: false
+
+  reasoning:
+    enable_description: false
+    few_shot: false
+    summarize_description: false
+    reasoning: true
+
+# ---------- Mode Ratios ----------
+mode_ratios:
+  system_only: 0.2
+  full: 0.6
+  full_detailed_ratio: 0.7
+  no_fewshot: 0.2
+  reasoning: 0.0

@@ -1,0 +1,32 @@
+# 큰 학습 데이터 (2.8GB) — GitHub 100MB 단일 파일 제한 초과
+datas/
+*.jsonl
+
+# 학습 산출물
+**/*_hf_dataset/
+*.bin
+*.safetensors
+*.pt
+*.pth
+checkpoints/
+runs/
+wandb/
+
+# 토크나이저 캐시 / Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+.pytest_cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+.serena/
+
+# 환경
+.env
+.env.local
+venv/
+.venv/

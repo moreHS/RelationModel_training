@@ -1,0 +1,250 @@
+
+###  ------------------------------------- System Prompt ------------------------------------- 
+
+# NER-NER 
+system_prompt_ner_ner: |
+    You are a professional relation classifier. Reason internally and output the final JSON. Follow the instructions sequentially.
+    Analyze the given Inputs and observe the Name Entity Recognition <NER> entity pairs in <CANDIDATE_PAIRS> to classify the entity pair into one of the relations in the <NER-NER Relation List>
+    Note: 
+    - <CANDIDATE_PAIRS> are derived from chunked data, meaning identical text may appear with different [E#] IDs. You must treat each unique [E#] ID as a distinct, independent entity.
+    - Be mutually exclusive yet completely exhaustive. 
+    - Be aware of the directionality of relations. Based on subject/object order. Inverse relations can be established as well. (Ex. "used", "used_by")
+    - The "relation" key can't be null. If there is no relationship return "NO_RELATION"
+
+# NER-BEE
+system_prompt_ner_bee: |
+    You are a professional binary relation classifier. Reason internally and output the final JSON. Follow the instructions sequentially.
+    Analyze the given Inputs and observe the Name Entity Recognition <NER> and Beauty Element Entity <BEE> entity pairs in <CANDIDATE_PAIRS> to perform a binary classification of whether the entity pair has a relation or not. 
+    Note: 
+    - <CANDIDATE_PAIRS> are derived from chunked data, meaning identical text may appear with different [E#] IDs. You must treat each unique [E#] ID as a distinct, independent entity.
+    - Be mutually exclusive yet completely exhaustive. 
+    - Be aware of the directionality of relations. Based on subject/object order. Inverse relations can be established as well. (Ex. "used", "used_by")
+    - The "is_relational" key must be true or false (lowercase string). If there is no relationship return false.
+
+# NER-BEE TRUE_ONLY
+system_prompt_ner_bee_true_only: |
+    You are a professional relation classifier. Reason internally and output the final JSON. Follow the instructions sequentially.
+    Analyze the given Inputs and observe the Name Entity Recognition <NER> and Beauty Element Entity <BEE> entity pairs in <CANDIDATE_PAIRS> to detect whether the entity pair has a relation or not. 
+    Note: 
+    - <CANDIDATE_PAIRS> are derived from chunked data, meaning identical text may appear with different [E#] IDs. You must treat each unique [E#] ID as a distinct, independent entity.
+    - Be mutually exclusive yet completely exhaustive. 
+    - Be aware of the directionality of relations. Based on subject/object order. Inverse relations can be established as well. (Ex. "used", "used_by")
+    - The "is_relational" key must be true or false (lowercase string). If there is no relationship return false.
+
+###  ------------------------------------- NER (Detailed/Summarized) -------------------------------------
+
+# Raw Data에서 추출한 NER Description (Detailed)
+ner_des_detailed : |
+    <NER Descriptions>
+    PRD - Words or phrases that directly refer to the name of a product. This includes specific product names, model names, product line names, and pronouns referring to the product in context.
+    DATE - Words or phrases that express time, date, day of the week, season, or specific points in time. This also includes the time or period related to specific actions involving beauty products.
+    VOL - Phrases that directly express the volume, quantity, or content of beauty products or additives. This does not include expressions of size or length.
+    EVN - Phrases that express events, giveaways, sales, samples, or benefits and events that provide advantages to buyers. This also includes actions for gifts or celebrations.
+    PER - Words or phrases that refer to people, including personal pronouns, groups of people, oneself, and professions. This includes words that refer to individuals or people with common characteristics.
+    COL - Words or phrases that express the names or colors used to distinguish cosmetics. This does not include expressions of brightness or additional descriptions.
+    BRD - Words or phrases that express the names of companies, organizations, or brands, including pronouns referring to them.
+    CAT - Words or phrases that refer to large groups or categories of beauty products. This includes words that broadly refer to types, categories, and attributes of beauty products.
+    AGE - Words or phrases that express a person's age or age group. This includes phrases that express specific age groups such as adults, grown-ups, and teenagers.
+    ING - Words or phrases that express the names of additives or chemicals contained in products. This includes the names of additives, chemicals, and pronouns referring to them.
+    </NER Descriptions>
+
+# NER Detailed Description을 GPT로 요약함 (Summarized)
+ner_des_summarized : |
+    <NER Descriptions>
+    PRD - Names or pronouns referring to a product, model, or line.
+    DATE - Words expressing time, dates, or time-related actions.
+    VOL - Mentions of volume, quantity, or content of products.
+    EVN - Events, giveaways, samples, or benefits.
+    PER - Personal references including people or professions.
+    COL - Cosmetic color names, excluding brightness.
+    BRD - Brand, company, or organization names and references.
+    CAT - Broad categories or types of beauty products.
+    AGE - Age or age group references.
+    ING - Additives, chemicals, or ingredients in products.
+    </NER Descriptions>
+
+###  ------------------------------------- BEE (Detailed/Summarized) ------------------------------------- 
+
+# BEE Description Detailed
+bee_des_detailed : |
+    <BEE Descriptions>
+    패키지/용기_디자인 - Attributes related to the overall design, size, etc., including primary and secondary packaging materials of the product.
+    단품_디자인 - Attributes of the product itself that is used or attached to the body within the primary packaging. Design elements of small tools (size).
+    용량 - Any expression indicating the capacity of the product's contents.
+    구성 - Information about essential components related to the main product.
+    발색력 - Expression regarding the intensity or transfer of color when using beauty products.
+    색상 - Expressions related to the color of beauty products. *Tone (product perspective): Cool tone palette, 21 shade foundation (color-related), *Tone (customer perspective): Warm tone skin, 21 shade skin (skin tone-related).
+    광감 - The shiny or glossy feel on the surface of the product. *Gloss + product = glossiness.
+    발림성 - The property of the product spreading on the surface when rubbed.
+    컬링/볼륨 - Mainly used in mascara and hair products. Attributes indicating the degree and size of curls.
+    펄감 - Expressions related to the pearl effect and related expressions. (The size of the pearl/particles is "texture").
+    표현력 - Abstract expressions that describe the product but do not match existing product attributes. '*Gloss + skin = expressiveness' is often used when the product attributes create an abstract image that aligns with human characteristics.
+    세정력 - The degree to which the product can be washed off cleanly. Includes expressions related to "removability" in product groups where cleansing is not the primary attribute. 'Ex) This eyeliner needs a special remover to be cleaned off. --> It does not have good cleansing power to the extent that it requires a special remover. (*Positivity or negativity depends on the user).
+    밀착력 - Expressions related to the degree to which the product adheres to the skin. ex, It does not adhere well, causing it to lift and transfer to the mask.
+    보습력 - Expressions related to the ability to retain moisture. Moisturizing finish expressions: moisture, oiliness.
+    지속력 - The strength of the product's attributes to last long. Includes holding power (the ability to maintain a set state or stay in one place) and setting power (the ability to maintain the created shape for a long time).
+    커버력 - Expressions indicating the ability to cover the skin in product groups where "coverage" is the primary attribute.
+    흡수력 - Expressions related to the speed and degree of product absorption.
+    성분 - Phrases describing the raw materials, additives, etc., of the product.
+    제형 - Phrases describing the form or feel of the product.
+    품질 - A comprehensive attribute indicating the nature of the product. Information about quality.
+    맛 - Expressions related to taste or the flavor of the product.
+    향 - Olfactory expressions. Abstract texts in the perfume product group are categorized as "expressiveness," but all other scent-related expressions in other categories are categorized as "scent."
+    효과 - Expressions indicating the performance of functional product groups. ex "The face looks brighter" for base makeup products, everything except "expressiveness" is categorized as "effect."
+    부작용/손상 - Harmful actions different from the product's purpose. Includes minor injuries that occur after actual product use, which are less severe than side effects.
+    가루날림 - Phrases describing the phenomenon of the texture scattering.
+    뭉침 - Phrases related to the phenomenon of the product clumping due to its ingredients.
+    무너짐 - Phrases related to changes in the makeup state, such as darkening (the phenomenon where the skin becomes dull and blotchy over time after applying makeup) or fading.
+    번짐 - Phrases related to the phenomenon of the product transferring and spreading.
+    백탁현상 - Phrases describing the phenomenon of the product clumping and turning white.
+    사용감 - Phrases describing the feeling when using the product.
+    편리성 - Attributes that are convenient and easy to use (all-in-one, easy pumping).
+    활용성 - Extending from the property of being well-utilized to using it differently from the original intention, being multi-purpose, having various options making it useful.
+    휴대성 - Attributes that make the product easy to carry regardless of its size.
+    유통기한 - The production and distribution date of the product.
+    배송 - Phrases related to all services related to delivery (delivery fee, delivery status).
+    서비스 - Phrases related to customer service.
+    판촉 - Phrases describing samples, free gifts, etc., provided by the seller, not the known promotions.
+    충성도 - Concrete actions indicating loyalty, not general product favorability. Phrases indicating a clear intention to repurchase or that the product has been repurchased.
+    인지가격 - The specific price excluding discounts (sales). The consumer's thoughts on the product price.
+    </BEE Descriptions>
+
+# BEE Description Summarized
+bee_des_summarized : |
+    <BEE Descriptions> 
+    패키지/용기_디자인 - Design of packaging including size/material.
+    단품_디자인 - Design of the individual product within packaging.
+    용량 - Product capacity expressions.
+    구성 - Components or items included with the main product.
+    발색력 - Intensity or payoff of color.
+    색상 - Product or skin tone-related color expressions.
+    광감 - Glossy or shiny appearance.
+    발림성 - How smoothly the product applies.
+    컬링/볼륨 - Curl or volume effects, especially for mascara/hair.
+    펄감 - Pearl or shimmer effects.
+    표현력 - Abstract, expressive quality of the product.
+    세정력 - Ease of washing off or cleansing power.
+    밀착력 - Product adherence to the skin.
+    보습력 - Moisturizing or hydration ability.
+    지속력 - Longevity or lasting power of the product.
+    커버력 - Skin coverage ability.
+    흡수력 - Absorption speed and effectiveness.
+    성분 - Ingredients or additives in the product.
+    제형 - Texture or form of the product.
+    품질 - General product quality.
+    맛 - Taste or flavor of the product.
+    향 - Scent or fragrance.
+    효과 - Visible or functional product effects.
+    부작용/손상 - Negative reactions or mild damage from use.
+    가루날림 - Powder fallout or scattering.
+    뭉침 - Clumping of the product.
+    무너짐 - Deterioration or fading of makeup.
+    번짐 - Smudging or spreading.
+    백탁현상 - Whitening or caking effect.
+    사용감 - Sensory experience during use.
+    편리성 - Convenience and ease of use.
+    활용성 - Versatility or multi-functionality.
+    휴대성 - Portability or ease of carrying.
+    유통기한 - Expiry or production date.
+    배송 - Delivery-related services.
+    서비스 - Customer service aspects.
+    판촉 - Promotions like samples or gifts.
+    충성도 - Loyalty or repurchase intention.
+    인지가격 - Consumer’s perceived (pre-discount) price.
+    </BEE Descriptions>
+
+###  ------------------------------------- NER-NER Relation Description ------------------------------------- 
+ner_ner_relation_list: |
+    <NER-NER Relation List>
+    addressed_by_treatment - (Problem/Symptom → Method) Addressed or treated by a specific method
+    addressed_to - (Message/Title/Action → Target Person) Who the message/product is aimed at
+    addresses - (Subject/Product/Action → Problem/Need) Deals with or solves a specific issue
+    affected_by - (Target → Cause/Factor) Influenced by a specific factor or cause
+    affects - (Cause/Subject → Result/Target) Imparts effects such as influence, increase, decrease, or improvement
+    applied_by - (Applied item/Procedure/Action → Practitioner) Who applies, performs, or administers it
+    applied_to - (Product/Action → Target/Area/Object) Where or to what it is applied
+    attribute_of - (Attribute value → Target) Whose or what that attribute belongs to
+    available_in - (Target → Inclusion/Packaging/Storage/Specification) Provided in what container, specification, or set
+    available_to - (Event/System/Product → Accessible person/Target) Subject who can use or participate
+    belongs_to - (Item/Document/Topic → Category/Domain) Affiliation, jurisdiction, or topic attribution
+    benefits - (Target A ↔ Target B) Provides or gains benefits (subject/object can swap depending on context)
+    benefits_user - (Product/Action → User) Provides benefits or utility to the user
+    brand_of - (Brand/Manufacturer → Product) Brand-to-product attribution
+    caused_by - (Result/Phenomenon → Cause) Occurs because of something
+    causes - (Cause → Result/Reaction) Direct causation or induction
+    comparison_with - (A ↔ B) Links two targets in a comparison, contrast, or substitution relationship
+    described_by - (Target/Attribute → Description/Expression) What words or phrases are used to describe it
+    describes - (Description/Term/Label → Target/Attribute) How it describes or refers to something
+    duration_of_use - Standardizes the duration of use ("how long")
+    experienced_by - (Experience/Effect → Experiencer) Who experiences it
+    experiences - (Experiencer → Experience/Effect) What is experienced
+    frequency_of_use - Standardizes the frequency of use ("how often")
+    gifted_by - (Giver → Gift/Product) Provision of a gift
+    gifted_to - (Gift/Product → Recipient) Receipt of a gift
+    has_attribute - (Target → Attribute value) Possessed characteristics such as color, scent, texture, quality, or condition
+    has_ingredient - (Product → Ingredient/Material) Contains a specific ingredient
+    has_instance - (Type/Class → Member/Instance) "Y includes Xs"
+    has_part - (Whole → Part/Component) Inclusion or part-whole relationship
+    information_from - (Information/Message → Source/Sender) Origin or transmission source of information
+    information_to - (Information/Message → Recipient/Target) Direction of information receipt or delivery
+    ingredient_of - (Ingredient/Material → Product/Mixture) Constituent ingredient of a whole
+    instance_of - (Entity → Broader type/Class) "X is an instance or subordinate of Y"
+    NO_RELATION - NO_RELATIONSHIP
+    not_used_by - (Product/Target → Person/Group) Indicates not using or avoiding
+    owned_by - (Target → Owner) Being owned by someone/something
+    owns - (Owner → Target) Ownership or possession
+    part_of - (Part/Component → Whole) Physical or logical part-whole relationship
+    perceived_by - (Evaluation/Impression → Perceiver/Reviewer) Who felt that way (e.g., good, bad, preference)
+    perceives - (Perceiver → Impression of attribute/target) How something is felt, including preferences and tastes
+    price_of - (Target → Price/Cost/Value) Amount or price information
+    produced_by - (Output/Product → Producer) "X is produced by Y"
+    produces - (Subject → Output/Effect) Produces or generates
+    provided_by - (Service/Sample/Product → Provider) Who provides it
+    provided_to - (Provider → Beneficiary/Target) To whom it is provided
+    purchased_by - (Product/Service → Buyer) The purchasing subject
+    purchases - (Buyer → Product/Service) The purchasing action
+    recommended_by - (Recommender → Target/Purpose) What was recommended and why
+    recommended_to - (Recommendation action/Subject → Recipient) To whom it was recommended
+    related_to - (A ↔ B) General association or connection (similar, same category, or related)
+    child_of - Family (child) member relationship among users
+    parent_of - Family (parent) member relationship among users
+    family_member_of - General family member relationship among users
+    required_by - (Condition/Resource → Target that needs it) What needs this resource/condition
+    requires - (Task/Product → Prerequisite/Resource/Precondition) Necessity, requirement, or dependency
+    same_entity - Two entities are practically identical (different notations of the same person, product, or concept)
+    sells - (Seller → Product/Service) The selling action
+    sold_by - (Product/Service → Seller/Platform) Seller or vendor
+    targeted_at - (Campaign/Product/Message → Target Audience) Aimed or appealed target
+    targeted_by - (Person/Group → Targeting Subject) Targeted by whom
+    time_of_use - Standardizes the time of use ("when")
+    treats - (Product/Action → Symptom/Problem) Treatment such as removal, alleviation, or protection
+    used_by - (Product/Tool → User group/Individual) Who uses it
+    used_for - (Tool/Product/Method → Purpose/Task) Usage or purpose
+    used_on - (Product/Action → Applied time/place/surface/context) When, where, or on what it is used
+    used_with - (Target A ↔ Target B) Used together or in combination (compatibility or layering)
+    uses - (User → Product/Tool) What is used
+    variant_of - (Variant/Color/Version → Base product/Concept) Variant relationship
+    </NER-NER Relation List>
+
+###  ------------------------------------- Reasoning Tags -------------------------------------
+
+# Simple Task + JSON Key -- Output Format + Reasoning
+output_format_reasoning: |
+    Think step by step. Print your reasoning process inside <think>...</think> tags before generating the final JSON.
+    The output format MUST be in JSON. Fill in a relation for every <CANDIDATE_PAIR>, if none exists return "NO_RELATION". Every set should consist of these 4 required keys in this specific order: pair_id, subject, relation, and object. Remember the pair_id, subject, and object MUST be exactly from the <CANDIDATE_PAIR> and the relation MUST be from the <Relation List>.
+
+# NER BEE Task + JSON Key -- Output Format + Reasoning
+output_format_w_keys_ner_bee_reasoning: |
+    Think step by step. Print your reasoning process inside <think>...</think> tags before generating the final JSON.
+    The output format MUST be in JSON. Fill in a value for "is_relational" for every <CANDIDATE_PAIR>, if no relation exists return "False". Every set should consist of these 4 required keys in this specific order: pair_id, subject, is_relational, and object. Remember the pair_id, subject, and object MUST be exactly from the <CANDIDATE_PAIR>.
+
+###  ------------------------------------- Output Format -------------------------------------
+
+# Simple Task + JSON Key -- Output Format
+output_format_w_keys: |
+    The output format MUST be in JSON. Fill in a relation for every <CANDIDATE_PAIR>, if none exists return "NO_RELATION". Every set should consist of these 4 required keys in this specific order: pair_id, subject, relation, and object. Remember the pair_id, subject, and object MUST be exactly from the <CANDIDATE_PAIR> and the relation MUST be from the <Relation List>. 
+
+# NER BEE Task + JSON Key -- Output Format
+output_format_w_keys_ner_bee: |
+    The output format MUST be in JSON. Fill in a value for "is_relational" for every <CANDIDATE_PAIR>, if no relation exists return "False". Every set should consist of these 4 required keys in this specific order: pair_id, subject, is_relational, and object. Remember the pair_id, subject, and object MUST be exactly from the <CANDIDATE_PAIR>.
+
