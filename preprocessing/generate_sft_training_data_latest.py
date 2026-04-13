@@ -202,10 +202,15 @@ def get_or_generate_sft_dataset(config_path: str = "generate_sft_training_data_c
         entries = raw_sources.get(task_key, [])
         if not entries: continue
         
-        # Calculate safe limit
-        temp_compiler = PromptCompiler(task_enum, list(BASE_MODES.values())[0], cfg["prompt"]["yaml_path"], [], 42, model_name, tokenizer)
-        ov = calculate_template_overhead(temp_compiler, tokenizer)
-        SAFE_LIMIT = max_token_threshold - ov - 2000 
+        # Calculate safe limit using MAX overhead across all active modes
+        # (heavy modes like full_detailed have larger description+few-shot overhead → would exceed limit if we only used the first mode)
+        overheads = []
+        for mode_cfg in BASE_MODES.values():
+            temp_compiler = PromptCompiler(task_enum, mode_cfg, cfg["prompt"]["yaml_path"], [], 42, model_name, tokenizer)
+            overheads.append(calculate_template_overhead(temp_compiler, tokenizer))
+        ov = max(overheads)
+        SAFE_LIMIT = max_token_threshold - ov - 2000
+        print(f"   Task {task_key}: mode overheads={overheads}, max={ov}, SAFE_LIMIT={SAFE_LIMIT}")
         
         hf_ds = Dataset.from_list(entries)
         def chunk_batch(batch):
