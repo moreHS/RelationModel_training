@@ -399,60 +399,36 @@ class PromptCompiler:
         
     def _apply_chat_template(self, prompt_data: dict) -> dict:
         """
-        설명: 토크나이저의 apply_chat_template을 사용하되, Gemma 4의 경우 새로운 태그 구조로 강제 오버라이드 합니다.
+        설명: 토크나이저의 apply_chat_template에 위임. Gemma4 / 표준 모델 모두 단일 경로.
+        Gemma4: enable_thinking 인자로 think 토큰 자동 처리 (chat_template.jinja의 strip_thinking 매크로 활용)
+        BOS 토큰은 chat_template이 자동 prepend (수동 strip 금지)
         """
-        if not self.tokenizer: 
+        if not self.tokenizer:
             return {"text": f"{prompt_data['sys']}\n{prompt_data['user']}\n---\n{prompt_data['ans']}"}
-
-        # 🎯 DETECT GEMMA 4
-        is_gemma4 = "gemma4" in (self.model_name or "").lower() or "gemma-4" in (self.model_name or "").lower()
 
         sys_content = f"### System Prompt:\n{prompt_data['sys']}" if prompt_data['sys'] else ""
         user_content = prompt_data['user'] or ""
         ans_content = prompt_data['ans'] or ""
 
+        messages = []
+        if sys_content:
+            messages.append({"role": "system", "content": sys_content})
+        messages.append({"role": "user", "content": user_content})
+        messages.append({"role": "assistant", "content": ans_content})
+
+        kwargs = {"tokenize": False, "add_generation_prompt": False}
+        # Gemma4 chat template은 enable_thinking 인자로 think 토큰을 system 턴에 자동 삽입/제거
+        is_gemma4 = "gemma4" in (self.model_name or "").lower() or "gemma-4" in (self.model_name or "").lower()
         if is_gemma4:
-            # =================================================================
-            # 🚀 GEMMA 4 OVERRIDE LOGIC
-            # =================================================================
-            
-            # 1. Auto-translate legacy <think> tags to Gemma 4 <|channel> format
-            ans_content = re.sub(
-                r'<think>\n?(.*?)\n?</think>', 
-                r'<|think|>\n<|channel>\n\1\n<channel>', 
-                ans_content, 
-                flags=re.DOTALL
-            )
+            kwargs["enable_thinking"] = bool(self.mode_config.reasoning)
 
-            # 2. Manually assemble the new <|turn> format
-            out = ""
-            if sys_content:
-                out += f"<|turn>system\n{sys_content}<turn|>\n"
-            out += f"<|turn>user\n{user_content}<turn|>\n"
-            out += f"<|turn>model\n{ans_content}<turn|>\n"
+        out = self.tokenizer.apply_chat_template(messages, **kwargs)
 
-            # 3. Strip the new Gemma 4 thinking tags if reasoning mode is OFF
-            if not self.mode_config.reasoning:
-                out = re.sub(r'<\|think\|>\n?<\|channel\|>.*?<channel>\n?', '', out, flags=re.DOTALL)
-                out = re.sub(r'<think>.*?</think>\n?', '', out, flags=re.DOTALL) # Fallback
+        # 비-reasoning에서 잔여 legacy <think> 태그 제거 (안전망)
+        if not self.mode_config.reasoning:
+            out = re.sub(r'<think>.*?</think>\n?', '', out, flags=re.DOTALL)
 
-            return {'text': out.strip()}
-
-        else:
-            # =================================================================
-            # 🐢 STANDARD LOGIC (Qwen, Gemma 3, etc)
-            # =================================================================
-            m = [{'role': 'system', 'content': sys_content}, 
-                 {'role': 'user', 'content': user_content}, 
-                 {'role': 'assistant', 'content': ans_content}]
-            
-            out = self.tokenizer.apply_chat_template(m, tokenize=False, add_generation_prompt=False)
-            
-            if not self.mode_config.reasoning:
-                out = re.sub(r'<think>.*?</think>\n?', '', out, flags=re.DOTALL)
-                
-            bos = getattr(self.tokenizer, "bos_token", None)
-            return {'text': out.replace(bos, "") if bos else out}
+        return {"text": out}
 
 #################################################################################################
 # HELPERS
