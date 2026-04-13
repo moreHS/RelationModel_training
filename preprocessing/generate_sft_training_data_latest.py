@@ -73,18 +73,33 @@ def generate_all_prompts(
         fs_text_global = fewshot_generator.format(fs_samples) if fs_samples else ""
         
         ds = Dataset.from_list(data_sources[task_name])
-        
+
+        # 단일 셔플 + 모드별 disjoint 인덱스 범위 사전 계산 (모드 간 sample overlap 제거)
+        # 이전: 모든 모드가 같은 seed로 .shuffle().select(range(N)) → 첫 N개 중복 노출
+        shuffled = ds.shuffle(seed=seed)
+        total = len(shuffled)
+        mode_ranges = {}
+        cursor = 0
+        full_registered = False
+        for m_name in base_modes:
+            if "full" in m_name:
+                if not full_registered:
+                    full_n = int(total * mode_ratios.get("full", 0))
+                    full_split = int(full_n * full_detail_ratio)
+                    mode_ranges["full_detailed"] = (cursor, cursor + full_split)
+                    mode_ranges["full_summary"] = (cursor + full_split, cursor + full_n)
+                    cursor += full_n
+                    full_registered = True
+            else:
+                n = int(total * mode_ratios.get(m_name, 0))
+                mode_ranges[m_name] = (cursor, cursor + n)
+                cursor += n
+        print(f"   Task {task_name} mode partition (total={total}): " + ", ".join(f"{k}=[{s},{e})" for k, (s, e) in mode_ranges.items()))
+
         for mode_name, mode_cfg in base_modes.items():
-            # Calculate how many samples get this specific mode (system_only, full_detailed, etc.)
-            ratio = mode_ratios.get("full" if "full" in mode_name else mode_name, 1.0)
-            sampled_count = int(len(ds) * ratio)
-            if sampled_count == 0: continue
-            
-            # Shuffle and allocate the dataset chunk
-            sampled = ds.shuffle(seed=seed).select(range(sampled_count))
-            if "full" in mode_name:
-                split_idx = int(len(sampled) * full_detail_ratio)
-                sampled = sampled.select(range(split_idx)) if "detailed" in mode_name else sampled.select(range(split_idx, len(sampled)))
+            s, e = mode_ranges.get(mode_name, (0, 0))
+            if e <= s: continue
+            sampled = shuffled.select(range(s, e))
             
             # Initialize Prompt Compiler for this mode
             compiler = PromptCompiler(task, mode_cfg, template_yaml_path, [], seed, model_name, tokenizer)
