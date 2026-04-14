@@ -150,7 +150,7 @@ def generate_all_prompts(
 # ==============================================================================
 # MAIN DATA PIPELINE
 # ==============================================================================
-def get_or_generate_sft_dataset(config_path: str = "generate_sft_training_data_config.yaml"):
+def get_or_generate_sft_dataset(config_path: str = "preprocessing/generate_sft_training_data_config.yaml"):
     cfg = yaml.safe_load(open(config_path, "r"))
     out_p = cfg["data"]["output_path"]
     hf_dataset_path = out_p.replace(".json", "_hf_dataset")

@@ -21,7 +21,7 @@ generation:
   
 # ---------- Prompt ----------
 prompt:
-  yaml_path: "./sft_data_generation_prompts_edited.yaml"
+  yaml_path: "./preprocessing/sft_data_generation_prompts_edited.yaml"
 
 # ---------- Negative Sampling Settings ----------
 negatives:
