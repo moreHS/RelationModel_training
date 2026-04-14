@@ -181,9 +181,9 @@ def get_or_generate_sft_dataset(config_path: str = "preprocessing/generate_sft_t
     classified = dp.extract_and_classify(raw_data)
     
     raw_sources = {
-        "ner_ner": classified["ner_ner"], "bee_bee": classified["bee_bee"], 
-        "ner_bee": classified["ner_bee"], "ner_bee_true_only": dp.remove_negative_relations(classified["ner_bee"]), 
-        "combine_all": classified["ner_ner"] + classified["bee_bee"] + classified["ner_bee"]
+        "ner_ner": classified["ner_ner"],
+        "ner_bee": classified["ner_bee"],
+        "ner_bee_true_only": dp.remove_negative_relations(classified["ner_bee"]),
     }
 
     # --------------------------------------------------------------------------
