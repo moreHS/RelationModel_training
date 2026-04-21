@@ -12,6 +12,13 @@ checkpoints/
 runs/
 wandb/
 
+# Unsloth 자동 생성 캐시
+unsloth_compiled_cache/
+
+# 로그 / 임시 덤프
+*.log
+v*.txt
+
 # 토크나이저 캐시 / Python
 __pycache__/
 *.pyc
