@@ -10,8 +10,10 @@ from datasets import load_from_disk # 🎯 Changed to load_from_disk
 from trl import SFTTrainer, SFTConfig
 from unsloth.chat_templates import train_on_responses_only
 
-TAG = "_no_think_tags"
-ROOT_DATA_PATH = '/app/dataset/preprocessed/sllm_ready_generated_prompts_qwen_hf_dataset'
+TAG = "_no_think_tags_v2"
+# _v2 dataset: diversity-aware sampling + 10만 target + C1~M5 fixes 반영
+# 기존 _hf_dataset (v1)은 유지해서 현재 돌고 있는 학습과 충돌 없도록.
+ROOT_DATA_PATH = '/app/dataset/preprocessed/sllm_ready_generated_prompts_qwen_v2_hf_dataset'
 OUTPUT_PATH = f'/app/models/qwen3.5b-9b_test{TAG}'
 RUN_NAME = f"qwen_3.5_9b_test{TAG}"
 

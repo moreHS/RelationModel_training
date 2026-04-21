@@ -9,7 +9,9 @@ model:
 # ---------- Data ----------
 data:
   input_path: "/app/host/datasets/sllm_all_ready.jsonl"
-  output_path: "/app/pred_data/sllm_ready_generated_prompts_gemma4.json"
+  # _v2: diversity-aware sampling + 10만 target + C1~M5 수정 반영 버전.
+  # 기존 prompts_gemma4.json/_hf_dataset은 건드리지 않고 병렬 생성.
+  output_path: "/app/pred_data/sllm_ready_generated_prompts_gemma4_v2.json"
 
 training_max_length: 8192 
 

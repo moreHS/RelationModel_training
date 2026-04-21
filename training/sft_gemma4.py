@@ -40,7 +40,9 @@ from trl import SFTTrainer, SFTConfig
 # =================================================================
 
 MODEL_NAME = '/app/host/models/gemma4-E4B-it/'
-DATA_PATH = '/app/pred_data/sllm_ready_generated_prompts_gemma4_hf_dataset'
+# _v2 dataset: diversity-aware sampling + 10만 target + C1~M5 fixes 반영
+# 기존 _hf_dataset (v1)은 유지해서 현재 돌고 있는 학습과 충돌 없도록.
+DATA_PATH = '/app/pred_data/sllm_ready_generated_prompts_gemma4_v2_hf_dataset'
 
 # Eval toggle — val set이 수천 row일 때 학습 시간 크게 증가. 기본 False.
 # 켜려면: ENABLE_EVAL=1 python training/sft_gemma4.py
@@ -52,7 +54,7 @@ LR = 1e-4
 BATCH = 8
 EPOCH = 3
 
-TAG = "_v1" + "_rank" + str(RANK) + "_alpha" + str(ALPHA) + "_lr" + str(LR) + "_batch" + str(BATCH) + "_ep" + str(EPOCH)
+TAG = "_v2" + "_rank" + str(RANK) + "_alpha" + str(ALPHA) + "_lr" + str(LR) + "_batch" + str(BATCH) + "_ep" + str(EPOCH)
 
 OUTPUT_PATH = f'/app/train_result/gemma4-e4b_sft{TAG}'
 RUN_NAME = f"gemma4_e4b_sft{TAG}"
