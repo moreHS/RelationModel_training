@@ -1,0 +1,45 @@
+# ================================================
+# Eval-Only Preprocessing Config
+# Single task + single mode, no train/val/test split,
+# few-shot DISABLED regardless of mode flag.
+# ================================================
+
+# ---------- Model ----------
+# Split tag & chat template are auto-detected from this path
+# (qwen / gemma3 / gemma4 substring match).
+model:
+  name: "/app/models/qwen3.5-9b/"
+
+# ---------- Data ----------
+data:
+  input_path: "/app/dataset/en_ner2ner_500.jsonl"
+  output_path: "/app/dataset/preprocessed/eval_qwen_no_fewshot_hf"
+
+# ---------- Task & Mode (SINGLE selection) ----------
+# task:  NER_NER / NER_BEE
+task: "NER_NER"
+
+# mode:  system_only / full_detailed / full_summary / no_fewshot / reasoning
+# NOTE: few-shot is skipped regardless of this mode's few_shot flag.
+# If the trained model was trained WITH few-shot (full_*), expect format mismatch.
+# Recommended: "no_fewshot" or "system_only".
+mode: "no_fewshot"
+
+# ---------- Token budget ----------
+training_max_length: 8192
+
+# ---------- Chunking ----------
+generation:
+  num_proc: 8
+  chunk_thresholds: [12, 10, 8, 6, 4]
+
+# ---------- Negative relations ----------
+negatives:
+  include_no_relationship: true
+
+# ---------- Prompt template ----------
+prompt:
+  yaml_path: "./sft_data_generation_prompts_edited.yaml"
+
+# ---------- Misc ----------
+seed: 42
