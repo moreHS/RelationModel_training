@@ -38,10 +38,19 @@ from trl import SFTTrainer, SFTConfig
 # =================================================================
 # 2. CONFIG
 # =================================================================
-TAG = "_pr2_v1"
-MODEL_NAME = '/app/models/gemma4-E4B/'
-DATA_PATH = '/app/dataset/preprocessed/sllm_ready_generated_prompts_gemma4_hf_dataset'
-OUTPUT_PATH = f'/app/models/gemma4-e4b_sft{TAG}'
+
+MODEL_NAME = '/app/host/models/gemma4-E4B-it/'
+DATA_PATH = '/app/pred_data/sllm_ready_generated_prompts_gemma4_hf_dataset'
+
+RANK = 8
+ALPHA = 16
+LR = 1e-4
+BATCH = 8
+EPOCH = 3
+
+TAG = "_v1" + "_rank" + str(RANK) + "_alpha" + str(ALPHA) + "_lr" + str(LR) + "_batch" + str(BATCH) + "_ep" + str(EPOCH)
+
+OUTPUT_PATH = f'/app/train_result/gemma4-e4b_sft{TAG}'
 RUN_NAME = f"gemma4_e4b_sft{TAG}"
 
 # Gemma 4 LoRA target modules (attention + MLP)
@@ -52,12 +61,12 @@ GEMMA4_TARGET_MODULES = [
 
 args = Namespace(
     model_name=MODEL_NAME,
-    rank=8,
-    alpha=16,
+    rank=RANK,
+    alpha=ALPHA,
     maxlen=8192,
-    lr=2e-4,
-    batch=4,
-    epoch=3,
+    lr=LR,
+    batch=BATCH,
+    epoch=EPOCH,
 )
 
 # =================================================================
@@ -154,8 +163,8 @@ sft_args = SFTConfig(
     dataset_text_field="text",
     per_device_train_batch_size=args.batch,
     max_seq_length=args.maxlen,
-    gradient_accumulation_steps=8,
-    warmup_steps=5,
+    gradient_accumulation_steps=4,
+    warmup_steps=50,
     num_train_epochs=args.epoch,
     learning_rate=args.lr,
     optim="adamw_8bit",
@@ -175,12 +184,12 @@ sft_args = SFTConfig(
 
     # ===== Save / Eval =====
     save_strategy="steps",
-    save_steps=180,
+    save_steps=1000,
     save_total_limit=2,
 
     eval_strategy="steps" if eval_dataset else "no",
-    eval_steps=180,
-    load_best_model_at_end=True if eval_dataset else False,
+    eval_steps=5000,
+    load_best_model_at_end=False, #True if eval_dataset else False,
     metric_for_best_model="eval_loss" if eval_dataset else None,
     greater_is_better=False,
 
