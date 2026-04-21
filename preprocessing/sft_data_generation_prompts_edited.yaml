@@ -236,7 +236,7 @@ output_format_reasoning: |
 # NER BEE Task + JSON Key -- Output Format + Reasoning
 output_format_w_keys_ner_bee_reasoning: |
     Think step by step. Print your reasoning process inside <think>...</think> tags before generating the final JSON.
-    The output format MUST be in JSON. Fill in a value for "is_relational" for every <CANDIDATE_PAIR>, if no relation exists return "False". Every set should consist of these 4 required keys in this specific order: pair_id, subject, is_relational, and object. Remember the pair_id, subject, and object MUST be exactly from the <CANDIDATE_PAIR>.
+    The output format MUST be in JSON. Fill in a value for "is_relational" for every <CANDIDATE_PAIR>, if no relation exists return "false". Every set should consist of these 4 required keys in this specific order: pair_id, subject, is_relational, and object. The "is_relational" value must be the lowercase string "true" or "false". Remember the pair_id, subject, and object MUST be exactly from the <CANDIDATE_PAIR>.
 
 ###  ------------------------------------- Output Format -------------------------------------
 
@@ -246,5 +246,5 @@ output_format_w_keys: |
 
 # NER BEE Task + JSON Key -- Output Format
 output_format_w_keys_ner_bee: |
-    The output format MUST be in JSON. Fill in a value for "is_relational" for every <CANDIDATE_PAIR>, if no relation exists return "False". Every set should consist of these 4 required keys in this specific order: pair_id, subject, is_relational, and object. Remember the pair_id, subject, and object MUST be exactly from the <CANDIDATE_PAIR>.
+    The output format MUST be in JSON. Fill in a value for "is_relational" for every <CANDIDATE_PAIR>, if no relation exists return "false". Every set should consist of these 4 required keys in this specific order: pair_id, subject, is_relational, and object. The "is_relational" value must be the lowercase string "true" or "false". Remember the pair_id, subject, and object MUST be exactly from the <CANDIDATE_PAIR>.
 

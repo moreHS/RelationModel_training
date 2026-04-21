@@ -1,111 +1,123 @@
+"""
+vLLM inference for eval.
+
+All paths are read from generate_eval_data_config.yaml (single source of truth).
+Override via env vars:
+  - EVAL_CONFIG: path to config yaml (default: ./generate_eval_data_config.yaml)
+  - CUDA_VISIBLE_DEVICES: GPU selection
+"""
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import json
 import re
+import sys
+import yaml
+
+# Allow env override before CUDA is inited
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+
 from vllm import LLM, SamplingParams
-from vllm.lora.request import LoRARequest # 🎯 Import vLLM's LoRA handler
+from vllm.lora.request import LoRARequest
 from datasets import load_from_disk
 
-# --- CONFIG ---
-MODE = "qwen" # Change to gemma4, gemma3, qwen, or qwen3.5_thinktags
 
-LORA_PATH = None # Default to None unless specified
+def detect_model_format(model_path: str):
+    """Returns (model_format, stop_tokens) by matching substrings in model path."""
+    lower = model_path.lower()
+    if "gemma4" in lower or "gemma-4" in lower:
+        return "gemma4", ["<turn|>"]
+    if "gemma" in lower:
+        return "gemma3", ["<end_of_turn>"]
+    return "qwen", ["<|im_end|>"]
 
-# 🎯 DYNAMIC MODEL ROUTING
-if MODE == "gemma4":
-    BASE_MODEL_PATH = "/app/models/gemma4-E4B-it/"
-elif MODE == "gemma3":
-    BASE_MODEL_PATH = "/app/models/gemma3-12b/"
-elif MODE == "qwen":
-    BASE_MODEL_PATH = "/app/models/qwen3.5-9b/"
-elif MODE == "qwen_checkpoint1620":
-    # 🎯 Separate the Base Model from the LoRA Adapter!
-    BASE_MODEL_PATH = "/app/models/qwen3.5-9b/" 
-    LORA_PATH = f"/app/models/{MODE}"
-else:
-    raise ValueError(f"❌ Unknown MODE: {MODE}. Please choose gemma4, gemma3, qwen, or qwen3.5_thinktags.")
 
-# 🎯 Eval preprocessing output (flat Dataset, no train/val/test split).
-# Must match `data.output_path` in generate_eval_data_config.yaml.
-TEST_DATA_PATH = "/app/dataset/preprocessed/eval_qwen_no_fewshot_hf"
-FINAL_OUTPUT_FILE = f"vllm_predictions_{MODE}.jsonl"
-DATA_LIMIT = None
+def strip_think_tags(text: str, model_format: str) -> str:
+    """Remove <think>...</think> regardless of model format (safety net for any
+    checkpoint that emits think tags). Eval preprocessing also strips stop tokens
+    but doesn't touch think tags — this is the catch-all."""
+    # Gemma4-style: <|think|>...<|/think|>
+    text = re.sub(r'<\|think\|>.*?<\|/think\|>', '', text, flags=re.DOTALL)
+    # Legacy text-form: <think>...</think>
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    return text.strip()
 
-# 🎯 THE TOGGLE: Auto-detects stop tokens from the resolved model path.
-if "gemma4" in BASE_MODEL_PATH.lower() or "gemma-4" in BASE_MODEL_PATH.lower():
-    MODEL_FORMAT = "gemma4"
-    stop_tokens = ["<turn|>"]
-elif "gemma" in BASE_MODEL_PATH.lower():
-    MODEL_FORMAT = "gemma3"
-    stop_tokens = ["<end_of_turn>"]
-else:
-    MODEL_FORMAT = "qwen"
-    stop_tokens = ["<|im_end|>"]
 
-def run_evaluation_pipeline():
-    print(f"🚀 Initializing vLLM for {MODEL_FORMAT.upper()} mode...")
-    
-    # 🎯 Initialize vLLM with LoRA enabled if an adapter is provided
+def run_evaluation_pipeline(cfg_path: str):
+    with open(cfg_path, "r") as f:
+        cfg = yaml.safe_load(f)
+
+    base_model_path = cfg["model"]["name"]
+    test_data_path = cfg["data"]["output_path"]
+    inf_cfg = cfg.get("inference", {})
+    predictions_path = inf_cfg.get("predictions_path")
+    lora_path = inf_cfg.get("lora_path")
+    max_lora_rank = inf_cfg.get("max_lora_rank", 8)
+    gpu_memory_utilization = inf_cfg.get("gpu_memory_utilization", 0.9)
+    max_model_len = cfg.get("training_max_length", 8192)
+
+    if predictions_path is None:
+        raise ValueError(f"Config missing 'inference.predictions_path' in {cfg_path}")
+
+    model_format, stop_tokens = detect_model_format(base_model_path)
+    print(f"🚀 Initializing vLLM (format={model_format})")
+    print(f"   Base model: {base_model_path}")
+    print(f"   Eval dataset: {test_data_path}")
+    print(f"   Predictions output: {predictions_path}")
+    if lora_path:
+        print(f"   LoRA adapter: {lora_path} (max_rank={max_lora_rank})")
+
     llm = LLM(
-        model=BASE_MODEL_PATH, 
-        gpu_memory_utilization=0.9,
-        max_model_len=8192,
-        enable_lora=True if LORA_PATH else False,
-        max_loras=1,
-        max_lora_rank=8, # Standard rank, vLLM needs this allocated upfront
+        model=base_model_path,
+        gpu_memory_utilization=gpu_memory_utilization,
+        max_model_len=max_model_len,
+        enable_lora=bool(lora_path),
+        max_loras=1 if lora_path else 0,
+        max_lora_rank=max_lora_rank,
     )
-    
-    sampling_params = SamplingParams(temperature=0, max_tokens=8192, stop=stop_tokens)
 
-    prompts_to_run = []
-    ground_truths = []
+    sampling_params = SamplingParams(
+        temperature=0,
+        max_tokens=max_model_len,
+        stop=stop_tokens,
+    )
 
-    print(f"📂 Reading HF dataset from {TEST_DATA_PATH}...")
-    dataset = load_from_disk(TEST_DATA_PATH)
-    if DATA_LIMIT and DATA_LIMIT < len(dataset):
-        dataset = dataset.select(range(DATA_LIMIT))
+    print(f"📂 Reading HF dataset from {test_data_path}")
+    dataset = load_from_disk(test_data_path)
 
-    # 🎯 Eval preprocessing already splits prompt / ground_truth at source.
-    # We consume those columns directly — no split_tag slicing needed.
-    for entry in dataset:
-        prompts_to_run.append(entry["prompt"])
-        ground_truths.append(entry.get("ground_truth", ""))
+    prompts_to_run = [row["prompt"] for row in dataset]
+    ground_truths = [row.get("ground_truth", "") for row in dataset]
 
     if prompts_to_run:
-        print("\n" + "="*80)
-        print(f"🔍 DIAGNOSTIC: EXACT PROMPT SENT TO {MODEL_FORMAT.upper()} (ROW 1)")
-        print("="*80)
+        print("\n" + "=" * 80)
+        print(f"🔍 DIAGNOSTIC: ROW 0 PROMPT")
+        print("=" * 80)
         print(prompts_to_run[0])
-        print("="*80 + "\n")
-    
-    print(f"⚡ Running inference on {len(prompts_to_run)} rows...")
-    
-    # 🎯 Dynamically apply the LoRA request during generation
-    if LORA_PATH:
-        print(f"🔗 Attaching LoRA Adapter from: {LORA_PATH}")
-        lora_request = LoRARequest("adapter", 1, LORA_PATH)
+        print("=" * 80 + "\n")
+
+    print(f"⚡ Running inference on {len(prompts_to_run)} rows")
+
+    if lora_path:
+        print(f"🔗 Attaching LoRA adapter: {lora_path}")
+        lora_request = LoRARequest("adapter", 1, lora_path)
         outputs = llm.generate(prompts_to_run, sampling_params, use_tqdm=True, lora_request=lora_request)
     else:
         outputs = llm.generate(prompts_to_run, sampling_params, use_tqdm=True)
 
-    with open(FINAL_OUTPUT_FILE, 'w', encoding='utf-8') as f:
+    os.makedirs(os.path.dirname(predictions_path) or ".", exist_ok=True)
+    with open(predictions_path, "w", encoding="utf-8") as f:
         for i, output in enumerate(outputs):
             prediction = output.outputs[0].text.strip()
-            
-            # 🎯 CLEANUP: Strip thinking tags so parser gets raw JSON
-            if MODEL_FORMAT == "gemma4":
-                prediction = re.sub(r'<\|think\|>.*?<channel>', '', prediction, flags=re.DOTALL).strip() 
-            elif MODE == "qwen_checkpoint1080":
-                prediction = re.sub(r'<think>.*?</think>', '', prediction, flags=re.DOTALL).strip()
+            prediction = strip_think_tags(prediction, model_format)
 
             record = {
-                "full_input": prompts_to_run[i], 
+                "full_input": prompts_to_run[i],
                 "prediction": prediction,
-                "ground_truth": ground_truths[i]
+                "ground_truth": ground_truths[i],
             }
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    print(f"✅ Saved to: {FINAL_OUTPUT_FILE}")
+    print(f"✅ Predictions saved to: {predictions_path}")
+
 
 if __name__ == "__main__":
-    run_evaluation_pipeline()
+    cfg_path = os.environ.get("EVAL_CONFIG", "generate_eval_data_config.yaml")
+    run_evaluation_pipeline(cfg_path)

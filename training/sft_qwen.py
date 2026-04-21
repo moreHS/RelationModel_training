@@ -15,6 +15,10 @@ ROOT_DATA_PATH = '/app/dataset/preprocessed/sllm_ready_generated_prompts_qwen_hf
 OUTPUT_PATH = f'/app/models/qwen3.5b-9b_test{TAG}'
 RUN_NAME = f"qwen_3.5_9b_test{TAG}"
 
+# Eval toggle — val set이 수천 row일 때 학습 시간 크게 증가. 기본 False.
+# 켜려면: ENABLE_EVAL=1 python training/sft_qwen.py
+ENABLE_EVAL = os.environ.get("ENABLE_EVAL", "0").lower() in ("1", "true", "yes")
+
 def get_target_modules(model_name):
     model_name = model_name.lower()
     if "gemma" in model_name:
@@ -72,14 +76,15 @@ FastLanguageModel.for_training(
 )
 
 # LoRA 설정
+# lora_dropout 0 → 0.05: SFT overfitting 완화 (weight_decay 단독 의존 대비 안정성 ↑)
 model = FastLanguageModel.get_peft_model(
     model,
     r = args.rank,
     lora_alpha = args.alpha,
-    lora_dropout = 0,
+    lora_dropout = 0.05,
     bias = "none",
     random_state = 3407,
-    use_gradient_checkpointing = True, 
+    use_gradient_checkpointing = True,
     target_modules = get_target_modules(args.model_name),
 )
 
@@ -98,10 +103,13 @@ full_dataset = load_from_disk(ROOT_DATA_PATH)
 # Extract train and validation splits (Checking for 'val' or 'validation')
 train_dataset = full_dataset["train"]
 
-if "validation" in full_dataset:
+if not ENABLE_EVAL:
+    eval_dataset = None
+    print("⏭️  ENABLE_EVAL=0 → validation split 로드하지 않음 (eval 비활성, 학습 속도 확보)")
+elif "validation" in full_dataset:
     eval_dataset = full_dataset["validation"]
 else:
-    print("⚠️ Warning: No validation split found in the dataset! Evaluation will be disabled.")
+    print("⚠️ Warning: ENABLE_EVAL=1이지만 validation split이 없음 → eval 비활성")
     eval_dataset = None
 
 print(f"✅ Loaded Train: {len(train_dataset)} rows")
@@ -146,55 +154,67 @@ print("="*60)
 args = SFTConfig(
     dataset_text_field = "text",
         per_device_train_batch_size = args.batch,
-        max_seq_length = args.maxlen, 
-        gradient_accumulation_steps = 8, 
-        warmup_steps = 5,
-        num_train_epochs = args.epoch, 
-        learning_rate = args.lr, 
+        max_seq_length = args.maxlen,
+        gradient_accumulation_steps = 8,
+        # warmup_steps=5 (0.02% of total) → warmup_ratio=0.03 (3%, industry standard for SFT)
+        warmup_ratio = 0.03,
+        num_train_epochs = args.epoch,
+        learning_rate = args.lr,
         optim = "adamw_8bit",
         weight_decay = 0.05,
         lr_scheduler_type = "cosine",
         seed = 3407,
         dataset_num_proc=8,
-        gradient_checkpointing = True, 
+        gradient_checkpointing = True,
         auto_find_batch_size=False,
         packing=False,
-        output_dir = OUTPUT_PATH, # 🎯 Make sure you define where to save!
+        output_dir = OUTPUT_PATH,
 
         # ==========================================
         # 📊 1. WANDB LOGGING
         # ==========================================
-        report_to = "wandb",               
+        report_to = "wandb",
         run_name = RUN_NAME,
-        logging_steps = 1,  
-        
+        logging_steps = 1,
+
         # ==========================================
-        # 💾 2. SAVING & CHECKPOINTING (Keep 2)
+        # 💾 2. SAVING & CHECKPOINTING
+        # save/eval_steps unified across sft_qwen and sft_gemma4 (= 500 steps).
         # ==========================================
         save_strategy = "steps",
-        save_steps = 180,                  
-        save_total_limit = 2,             
-        
+        save_steps = 500,
+        save_total_limit = 2,
+
         # ==========================================
         # 🧪 3. EVALUATION & BEST MODEL
+        # eval disabled when no validation split to avoid trainer crash.
         # ==========================================
-        eval_strategy = "steps",
-        eval_steps = 180,                   
-        load_best_model_at_end = True,     
-        metric_for_best_model = "eval_loss", 
+        eval_strategy = "steps" if eval_dataset is not None else "no",
+        eval_steps = 500,
+        load_best_model_at_end = True if eval_dataset is not None else False,
+        metric_for_best_model = "eval_loss" if eval_dataset is not None else None,
         greater_is_better = False,
-        
-        per_device_eval_batch_size = 1,  
+
+        per_device_eval_batch_size = 1,
         eval_accumulation_steps = 1,
     )
 
 trainer = SFTTrainer(
     model = model,
     tokenizer = tokenizer,
-    train_dataset = train_dataset,  
-    eval_dataset = eval_dataset,   
+    train_dataset = train_dataset,
+    eval_dataset = eval_dataset,
     args = args
 )
+
+# Response-only loss: mask the instruction/system portion so gradient flows only on
+# the assistant's JSON answer. Keeps Qwen's loss target aligned with Gemma4's setup.
+trainer = train_on_responses_only(
+    trainer,
+    instruction_part="<|im_start|>user\n",
+    response_part="<|im_start|>assistant\n",
+)
+print("✅ Applied train_on_responses_only (instruction tokens masked).")
 
 
 gpu_stats = torch.cuda.get_device_properties(0)

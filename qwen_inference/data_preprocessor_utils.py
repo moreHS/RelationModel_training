@@ -229,32 +229,61 @@ class RelationBasedChunker:
     """
     설명: sLLM maxlen 컨텍스트 길이 제한을 보호하기 위해, candidate_pair 개수 기준으로 문서를 chunking 하는 클래스.
     """
+    _TAG_RE = re.compile(r'\[([A-Z_][A-Z_0-9/]*\d+)\]')
+
+    @classmethod
+    def _extract_tag_ids(cls, text_like: str):
+        return set(cls._TAG_RE.findall(text_like or ""))
+
+    @classmethod
+    def _narrow_text_to_chunk(cls, text: str, chunk_cands, padding: int = 200) -> str:
+        if not text or not chunk_cands:
+            return text
+        needed = set()
+        for c in chunk_cands:
+            needed |= cls._extract_tag_ids(str(c.get("subject", "")))
+            needed |= cls._extract_tag_ids(str(c.get("object", "")))
+        if not needed:
+            return text
+
+        positions = []
+        for tag in needed:
+            marker = f"[{tag}]"
+            idx = text.find(marker)
+            if idx < 0:
+                return text
+            positions.append(idx)
+            positions.append(idx + len(marker))
+            close_marker = f"[/{tag}]"
+            close_idx = text.find(close_marker)
+            if close_idx >= 0:
+                positions.append(close_idx + len(close_marker))
+        start = max(0, min(positions) - padding)
+        end = min(len(text), max(positions) + padding)
+        if (end - start) >= len(text) * 0.7:
+            return text
+        return text[start:end]
+
     def chunk_by_relations(self, entry: Dict[str, Any], target_task=None, entity_threshold: int = 20) -> List[Dict[str, Any]]:
-        """
-        Input: 단일 문서 Dict (entry), target_task, entity_threshold
-        Output: entity_threshold에 맞춰 여러 개로 쪼개진 문서 List[Dict]
-        설명: 하나의 문서 내 candidate_pair이 너무 많으면 entity_threshold 단위로 잘라서 새 문서를 여러개 만드는 함수
-        """
         cands = entry.get("candidate_pairs", [])
         metas = entry.get("meta_info", [])
         text = entry.get("text", "")
 
-        # entity_threshold 는 청크당 MAX candidate_pair 개수로 해석 됨. 제한을 넘지 않으면 원본을 그대로 반환
         if len(cands) <= entity_threshold:
             return [entry]
 
-        # entity_threshold 단위로 슬라이싱하여 청크 생성
         chunks = []
         for i in range(0, len(cands), entity_threshold):
+            chunk_cands = cands[i:i+entity_threshold]
             chunk_entry = entry.copy()
             chunk_entry["id"] = f"{entry['id']}_chunk_{i//entity_threshold}"
             chunk_entry["origin_id"] = entry.get("origin_id", entry["id"])
-            chunk_entry["text"] = text # Pass the text down
-            
-            chunk_entry["candidate_pairs"] = cands[i:i+entity_threshold]
+            chunk_entry["text"] = self._narrow_text_to_chunk(text, chunk_cands)
+
+            chunk_entry["candidate_pairs"] = chunk_cands
             if metas:
                 chunk_entry["meta_info"] = metas[i:i+entity_threshold]
-                
+
             chunks.append(chunk_entry)
 
         return chunks
@@ -299,7 +328,15 @@ class PreprocessInput:
                 raw_rel = normalize_negative_label(cand.get("relation", "NO_RELATION"))
                 pair_id = cand.get('pair_id', 'UNK')
                 formatted_pair_id = f"[{pair_id}]"
-                
+
+                # NER-BEE / NER-BEE_TRUE_ONLY는 is_relational 키가 true/false binary여야 하므로
+                # NO_RELATION은 "false", 그 외 속성/관계명 라벨은 모두 "true"로 정규화.
+                # (system_prompt_ner_bee와 output_format_w_keys_ner_bee의 contract와 일치시킴)
+                if task_type in [DataGenerationTask.NER_BEE, DataGenerationTask.NER_BEE_TRUE_ONLY]:
+                    output_rel = "false" if raw_rel in (None, "NO_RELATION") else "true"
+                else:
+                    output_rel = raw_rel
+
                 # 1. 🎯 INPUT: Format the candidate pair as a JSON dictionary (null placeholder)
                 input_cand_dict = {
                     "pair_id": formatted_pair_id,
@@ -311,9 +348,9 @@ class PreprocessInput:
 
                 # 2. 🎯 OUTPUT: Same JSON structure, but including the actual relation
                 strict_order_dict = {
-                    "pair_id": formatted_pair_id, 
+                    "pair_id": formatted_pair_id,
                     "subject": sub_str,
-                    rel_key: raw_rel,
+                    rel_key: output_rel,
                     "object": obj_str
                 }
                 output_list.append(strict_order_dict)
@@ -373,10 +410,13 @@ class PromptCompiler:
                 desc = self.yaml_data.get(f"ner_des_{d_key}") + "\n\n" + self.yaml_data.get(f"bee_des_{d_key}")
         self.static_description = desc
         
-        if self.task in [DataGenerationTask.NER_BEE, DataGenerationTask.NER_BEE_TRUE_ONLY]:
-            fmt_key = "output_format_w_keys_ner_bee"
-        else:  # NER_NER
-            fmt_key = "output_format_w_keys"
+        # Output format selection — branches on (task, reasoning).
+        is_bee = self.task in [DataGenerationTask.NER_BEE, DataGenerationTask.NER_BEE_TRUE_ONLY]
+        use_reasoning = bool(getattr(self.mode_config, "reasoning", False))
+        if is_bee:
+            fmt_key = "output_format_w_keys_ner_bee_reasoning" if use_reasoning else "output_format_w_keys_ner_bee"
+        else:
+            fmt_key = "output_format_reasoning" if use_reasoning else "output_format_w_keys"
             
         self.static_output_format = self.yaml_data.get(fmt_key, "").strip()
 
@@ -440,9 +480,18 @@ class TokenCounter:
     def count(self, data: Any) -> int:
         return len(self.tk(json.dumps(data, ensure_ascii=False) if not isinstance(data, str) else data, add_special_tokens=False)["input_ids"])
 
-def calculate_template_overhead(prompt_compiler, tokenizer) -> int:
+def calculate_template_overhead(prompt_compiler, tokenizer, fewshot_text: str = "") -> int:
+    """
+    Returns token count of the empty-input template + (optional) few-shot block.
+
+    Args:
+        fewshot_text: If the mode uses few-shot, pass a realistic fs_text so the
+                      overhead reflects what actually appears in the prompt.
+    """
     dummy = {"id": "overhead", "input": "", "output": []}
-    compiled = prompt_compiler.compile_prompts(dummy)
+    mode_uses_fewshot = getattr(prompt_compiler.mode_config, "few_shot", False)
+    fs = fewshot_text if mode_uses_fewshot else ""
+    compiled = prompt_compiler.compile_prompts(dummy, fs)
     templated = prompt_compiler._apply_chat_template(compiled)
     return len(tokenizer.encode(templated["text"])) + 20
 
@@ -457,8 +506,15 @@ import json
 import random
 
 class GenerateFewShotSamples:
-    def __init__(self, data_dict, seed=42):
-        self.data_dict = data_dict
+    def __init__(self, data_dict, seed=42, allowed_origin_ids=None):
+        if allowed_origin_ids is not None:
+            allowed = set(allowed_origin_ids)
+            self.data_dict = {
+                task: [c for c in chunks if c.get("origin_id") in allowed]
+                for task, chunks in data_dict.items()
+            }
+        else:
+            self.data_dict = data_dict
         self.random = random.Random(seed)
         self.RARE_RELATIONS = {
             "instance_of", "addresses", "applied_by", "purchases", "provided_to",
@@ -472,38 +528,53 @@ class GenerateFewShotSamples:
             "child_of", "parent_of", "brand_of", "family_member_of"
         }
 
-    def generate_by_pairs(self, task, min_pairs=8, max_pairs=12):
+    def generate_by_pairs(self, task, min_pairs=8, max_pairs=12, exclude_origin_id=None,
+                          prioritize_rare=True):
         chunks = self.data_dict.get(task, [])
         if not chunks: return []
 
+        if exclude_origin_id is not None:
+            chunks = [c for c in chunks if c.get("origin_id") != exclude_origin_id]
+            if not chunks: return []
+
+        is_bee_task = task in ("ner_bee", "ner_bee_true_only")
+
         rare_chunks = []
         common_chunks = []
-        
-        # 🎯 FIX 1: Scan the JSON strings directly since the arrays were removed
         for c in chunks:
             out_str = c.get('output', "")
-            if any(f'"{r}"' in out_str for r in self.RARE_RELATIONS):
+            if is_bee_task:
+                has_priority = '"is_relational": "true"' in out_str
+            else:
+                has_priority = any(f'"{r}"' in out_str for r in self.RARE_RELATIONS)
+            if has_priority:
                 rare_chunks.append(c)
             else:
                 common_chunks.append(c)
-        
+
         self.random.shuffle(rare_chunks)
+        self.random.shuffle(common_chunks)
+
+        if not prioritize_rare:
+            interleaved = list(chunks)
+            self.random.shuffle(interleaved)
+            rare_chunks = interleaved
+            common_chunks = []
+
         selected_samples = []
         current_pair_count = 0
 
-        # 🎯 FIX 2: Count pairs dynamically based on the output text
         for chunk in rare_chunks:
             chunk_pairs = chunk.get('output', "").count('"subject":')
-            if chunk_pairs == 0: continue # Skip empties
+            if chunk_pairs == 0: continue
 
             if current_pair_count + chunk_pairs <= max_pairs:
                 selected_samples.append(chunk)
                 current_pair_count += chunk_pairs
-            
+
             if current_pair_count >= min_pairs:
                 break
-        
-        # Fallback to common chunks if rare chunks didn't fill the 8-12 gap
+
         if current_pair_count < min_pairs:
             self.random.shuffle(common_chunks)
             for chunk in common_chunks:

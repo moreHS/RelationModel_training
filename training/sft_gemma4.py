@@ -42,6 +42,10 @@ from trl import SFTTrainer, SFTConfig
 MODEL_NAME = '/app/host/models/gemma4-E4B-it/'
 DATA_PATH = '/app/pred_data/sllm_ready_generated_prompts_gemma4_hf_dataset'
 
+# Eval toggle — val set이 수천 row일 때 학습 시간 크게 증가. 기본 False.
+# 켜려면: ENABLE_EVAL=1 python training/sft_gemma4.py
+ENABLE_EVAL = os.environ.get("ENABLE_EVAL", "0").lower() in ("1", "true", "yes")
+
 RANK = 8
 ALPHA = 16
 LR = 1e-4
@@ -112,7 +116,8 @@ model = FastLanguageModel.get_peft_model(
     model,
     r=args.rank,
     lora_alpha=args.alpha,
-    lora_dropout=0,
+    # lora_dropout 0 → 0.05: SFT overfitting 완화 (sft_qwen과 정렬)
+    lora_dropout=0.05,
     bias="none",
     random_state=3407,
     use_gradient_checkpointing="unsloth",
@@ -132,13 +137,18 @@ print(f"📂 Loading dataset from {DATA_PATH}...")
 full_dataset = load_from_disk(DATA_PATH)
 
 train_dataset = full_dataset["train"]
-eval_dataset = full_dataset["validation"] if "validation" in full_dataset else None
+if not ENABLE_EVAL:
+    eval_dataset = None
+    print("⏭️  ENABLE_EVAL=0 → validation split 로드하지 않음 (eval 비활성, 학습 속도 확보)")
+elif "validation" in full_dataset:
+    eval_dataset = full_dataset["validation"]
+else:
+    eval_dataset = None
+    print("⚠️ ENABLE_EVAL=1이지만 validation split 없음 → eval 비활성")
 
 print(f"✅ Train: {len(train_dataset)} rows")
 if eval_dataset:
     print(f"✅ Eval:  {len(eval_dataset)} rows")
-else:
-    print("⚠️ No validation split — eval 비활성화")
 
 # 데이터 sanity check
 print("\n" + "=" * 60)
@@ -164,7 +174,8 @@ sft_args = SFTConfig(
     per_device_train_batch_size=args.batch,
     max_seq_length=args.maxlen,
     gradient_accumulation_steps=4,
-    warmup_steps=50,
+    # warmup_steps=50 (0.25% of total) → warmup_ratio=0.03 (3%, aligned with sft_qwen)
+    warmup_ratio=0.03,
     num_train_epochs=args.epoch,
     learning_rate=args.lr,
     optim="adamw_8bit",
@@ -183,13 +194,15 @@ sft_args = SFTConfig(
     logging_steps=1,
 
     # ===== Save / Eval =====
+    # save/eval_steps unified with sft_qwen at 500 (was 1000/5000).
     save_strategy="steps",
-    save_steps=1000,
+    save_steps=500,
     save_total_limit=2,
 
     eval_strategy="steps" if eval_dataset else "no",
-    eval_steps=5000,
-    load_best_model_at_end=False, #True if eval_dataset else False,
+    eval_steps=500,
+    # Activate best-model loading when validation exists (was hardcoded False).
+    load_best_model_at_end=True if eval_dataset else False,
     metric_for_best_model="eval_loss" if eval_dataset else None,
     greater_is_better=False,
 

@@ -11,9 +11,29 @@ model:
   name: "/app/models/qwen3.5-9b/"
 
 # ---------- Data ----------
+# All eval stages (preprocess / vLLM inference / metadata merge) share these paths.
 data:
+  # 평가 입력 JSONL (metadata lookup source와 반드시 같아야 함 — origin_id 매칭용)
   input_path: "/app/dataset/en_ner2ner_500.jsonl"
+  # Preprocessing output = vLLM inference input = merge step's HF dataset
   output_path: "/app/dataset/preprocessed/eval_qwen_no_fewshot_hf"
+
+# ---------- Inference ----------
+inference:
+  # vLLM이 생성한 predictions JSONL. merge 단계에서도 이 경로를 읽음.
+  predictions_path: "/app/hs/sllm/vllm_predictions_qwen.jsonl"
+  # Optional: LoRA adapter path. null/미설정이면 base model만 사용.
+  lora_path: null
+  # Must match training-time LoRA rank. 학습 rank 변경 시 여기도 변경.
+  max_lora_rank: 8
+  # vLLM GPU 메모리 점유율. 다른 프로세스와 공유 시 낮추기.
+  gpu_memory_utilization: 0.9
+
+# ---------- Merge ----------
+merge:
+  output_path: "/app/hs/sllm/parsed_output_with_metadata_qwen.jsonl"
+  # Eval 시 ground_truth 포함 여부 (False면 pure inference 모드)
+  eval_mode: true
 
 # ---------- Task & Mode (SINGLE selection) ----------
 # task:  NER_NER / NER_BEE

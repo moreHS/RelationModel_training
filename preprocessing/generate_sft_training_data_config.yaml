@@ -16,8 +16,39 @@ training_max_length: 8192
 generation:
   num_proc: 8
   batch_size: 1000
-  chunk_thresholds: [12, 10, 8, 6, 4] 
-  target_total_training_samples: 300000
+  chunk_thresholds: [12, 10, 8, 6, 4]
+  # 30만 → 10만 (학습 속도 확보 + diversity sampling으로 품질 유지)
+  # 실제 total은 target_train / 0.7 ≈ 142,857로 자동 환산됨.
+  target_total_training_samples: 100000
+
+  # ---------- Diversity-aware quota sampling (PHASE 3) ----------
+  # 3-pass greedy: Priority 보존 → Coverage floor 충족 → Novelty/head-cap fill
+  # enable=false면 legacy random origin sampling으로 폴백.
+  diversity:
+    enable: true
+
+    # Dynamic rare 판정: corpus에 X chunk 미만 또는 Y origin 미만 지원시 rare로 승격
+    dynamic_rare_chunk_threshold: 100
+    dynamic_rare_origin_threshold: 30
+
+    # Relation 노출 floor: 각 non-head relation은 최소 N chunk 보장
+    # floor = clip(relation_floor_ratio * raw_exposure, min, max)
+    relation_floor_min: 20
+    relation_floor_max: 100
+    relation_floor_ratio: 0.25
+
+    # Entity-group pair 노출 floor: subj_group>obj_group 조합별 최소 chunk
+    group_pair_floor_min: 10
+    group_pair_floor_max: 60
+    group_pair_floor_ratio: 0.15
+
+    # Head relation share soft cap (chunk 점유율 상한, 초과분은 penalty로 억제)
+    head_caps_ner_ner:
+      NO_RELATION: 0.35
+      used_by: 0.14
+      same_entity: 0.10
+    head_caps_ner_bee:
+      __bee_false__: 0.70
   
 # ---------- Prompt ----------
 prompt:
@@ -37,10 +68,11 @@ fewshot:
   prioritize_rare: True
 
 # ---------- Tasks ----------
+# NER_BEE_TRUE_ONLY는 eval 파이프라인에서 미지원 → 학습에서도 제외하여 정합성 확보.
+# 필요 시 eval(generate_eval_data.py) 지원부터 먼저 추가한 뒤 재활성화.
 tasks:
   - "NER_NER"
   - "NER_BEE"
-  - "NER_BEE_TRUE_ONLY"
 
 # ---------- Modes ----------
 modes:
