@@ -529,12 +529,20 @@ class GenerateFewShotSamples:
         }
 
     def generate_by_pairs(self, task, min_pairs=8, max_pairs=12, exclude_origin_id=None,
-                          prioritize_rare=True):
+                          prioritize_rare=True, filter_relations=None):
         chunks = self.data_dict.get(task, [])
         if not chunks: return []
 
         if exclude_origin_id is not None:
             chunks = [c for c in chunks if c.get("origin_id") != exclude_origin_id]
+            if not chunks: return []
+
+        if filter_relations:
+            needles = set(filter_relations)
+            chunks = [
+                c for c in chunks
+                if any(f'"{r}"' in c.get("output", "") for r in needles)
+            ]
             if not chunks: return []
 
         is_bee_task = task in ("ner_bee", "ner_bee_true_only")
@@ -588,6 +596,36 @@ class GenerateFewShotSamples:
                     break
 
         return selected_samples
+
+    def generate_gold_first(self, task, min_pairs=8, max_pairs=12, exclude_origin_id=None,
+                            prioritize_rare=True, supplementary_generator=None):
+        """Mirror of the main-preprocessing version (see main utils for docstring)."""
+        primary = self.generate_by_pairs(
+            task, min_pairs=min_pairs, max_pairs=max_pairs,
+            exclude_origin_id=exclude_origin_id, prioritize_rare=prioritize_rare,
+        )
+        if supplementary_generator is None:
+            return primary
+        def _pair_count(samples):
+            return sum(s.get("output", "").count('"subject":') for s in samples)
+        headroom = max_pairs - _pair_count(primary)
+        if headroom <= 0:
+            return primary
+        covered = set()
+        for s in primary:
+            out_str = s.get("output", "")
+            for r in self.RARE_RELATIONS:
+                if f'"{r}"' in out_str:
+                    covered.add(r)
+        missing = self.RARE_RELATIONS - covered
+        if not missing:
+            return primary
+        supplement = supplementary_generator.generate_by_pairs(
+            task, min_pairs=0, max_pairs=headroom,
+            exclude_origin_id=exclude_origin_id, prioritize_rare=True,
+            filter_relations=missing,
+        )
+        return list(primary) + list(supplement or [])
 
     def format(self, samples):
         """

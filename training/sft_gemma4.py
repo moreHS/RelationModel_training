@@ -32,7 +32,7 @@ from unsloth import FastLanguageModel
 from unsloth.chat_templates import train_on_responses_only
 import torch
 from argparse import Namespace
-from datasets import load_from_disk
+from datasets import load_from_disk, interleave_datasets
 from trl import SFTTrainer, SFTConfig
 
 # =================================================================
@@ -43,6 +43,11 @@ MODEL_NAME = '/app/host/models/gemma4-E4B-it/'
 # _v2 dataset: diversity-aware sampling + 10만 target + C1~M5 fixes 반영
 # 기존 _hf_dataset (v1)은 유지해서 현재 돌고 있는 학습과 충돌 없도록.
 DATA_PATH = '/app/pred_data/sllm_ready_generated_prompts_gemma4_v2_hf_dataset'
+
+# Gold dataset (train-only, human-verified) — interleave_datasets로 확률 혼합.
+# 없으면 gracefully fall back to main-only.
+GOLD_DATA_PATH = '/app/pred_data/sllm_ready_generated_prompts_gemma4_gold_v2_hf_dataset'
+P_GOLD = float(os.environ.get("P_GOLD", "0.10"))
 
 # Eval toggle — val set이 수천 row일 때 학습 시간 크게 증가. 기본 False.
 # 켜려면: ENABLE_EVAL=1 python training/sft_gemma4.py
@@ -137,8 +142,31 @@ assert trainable > 0, "LoRA trainable params == 0 — get_peft_model 실패"
 # =================================================================
 print(f"📂 Loading dataset from {DATA_PATH}...")
 full_dataset = load_from_disk(DATA_PATH)
+main_train = full_dataset["train"]
 
-train_dataset = full_dataset["train"]
+# Gold mixing: if a gold HF dataset exists, interleave with main at p_gold.
+# stopping_strategy="all_exhausted" keeps cycling gold (which is tiny) until main is exhausted,
+# so gold is effectively oversampled to match the main train budget at ratio P_GOLD.
+if os.path.exists(GOLD_DATA_PATH):
+    try:
+        gold_full = load_from_disk(GOLD_DATA_PATH)
+        gold_train = gold_full["train"]
+        print(f"🪙 Gold dataset loaded: {len(gold_train)} rows from {GOLD_DATA_PATH}")
+        print(f"   Mixing with p_gold={P_GOLD} (main={1-P_GOLD:.2f}) via interleave_datasets")
+        train_dataset = interleave_datasets(
+            [main_train, gold_train],
+            probabilities=[1.0 - P_GOLD, P_GOLD],
+            stopping_strategy="all_exhausted",
+            seed=3407,
+        )
+        print(f"   Mixed train length: {len(train_dataset)} rows")
+    except Exception as e:
+        print(f"⚠️ Gold interleave failed ({e}) — falling back to main-only")
+        train_dataset = main_train
+else:
+    print(f"ℹ️  No gold dataset at {GOLD_DATA_PATH} — main-only train")
+    train_dataset = main_train
+
 if not ENABLE_EVAL:
     eval_dataset = None
     print("⏭️  ENABLE_EVAL=0 → validation split 로드하지 않음 (eval 비활성, 학습 속도 확보)")

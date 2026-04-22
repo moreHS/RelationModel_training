@@ -68,6 +68,10 @@ fewshot:
   min_pairs: 8
   max_pairs: 12
   prioritize_rare: True
+  # Gold HF dataset 경로가 존재하면 few-shot primary pool로 사용.
+  # gold에 없는 rare relation만 main pool(final_data_sources, train split)에서 보충.
+  # 비어있으면 기존처럼 main-only pool 동작.
+  gold_hf_dataset_path: "/app/pred_data/sllm_ready_generated_prompts_gemma4_gold_v2_hf_dataset"
 
 # ---------- Tasks ----------
 # NER_BEE_TRUE_ONLY는 eval 파이프라인에서 미지원 → 학습에서도 제외하여 정합성 확보.

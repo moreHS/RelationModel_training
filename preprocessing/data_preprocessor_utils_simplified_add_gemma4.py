@@ -629,7 +629,7 @@ class GenerateFewShotSamples:
         }
 
     def generate_by_pairs(self, task, min_pairs=8, max_pairs=12, exclude_origin_id=None,
-                          prioritize_rare=True):
+                          prioritize_rare=True, filter_relations=None):
         """
         Args:
             prioritize_rare: For NER-NER, prefer chunks containing rare relations.
@@ -638,12 +638,24 @@ class GenerateFewShotSamples:
                 shows non-trivial examples, not all-NO_RELATION.
             exclude_origin_id: chunks sharing this origin_id are excluded
                 from the pool (prevents self-demonstration leakage for the current row).
+            filter_relations: optional set of relation strings. If provided, only
+                chunks whose output contains at least one of these relations are
+                eligible. Used by the gold-first hybrid wrapper to pull rare-only
+                supplement examples from the main pool.
         """
         chunks = self.data_dict.get(task, [])
         if not chunks: return []
 
         if exclude_origin_id is not None:
             chunks = [c for c in chunks if c.get("origin_id") != exclude_origin_id]
+            if not chunks: return []
+
+        if filter_relations:
+            needles = set(filter_relations)
+            chunks = [
+                c for c in chunks
+                if any(f'"{r}"' in c.get("output", "") for r in needles)
+            ]
             if not chunks: return []
 
         # Task-aware "priority" bucket:
@@ -703,6 +715,70 @@ class GenerateFewShotSamples:
                     break
 
         return selected_samples
+
+    def generate_gold_first(self, task, min_pairs=8, max_pairs=12, exclude_origin_id=None,
+                            prioritize_rare=True, supplementary_generator=None):
+        """
+        Gold-first few-shot selection: draw primarily from `self` (gold pool),
+        then top up with rare-class chunks from `supplementary_generator` (main pool)
+        only for rare relations that gold couldn't cover.
+
+        Behavior:
+          1. Pick up to `max_pairs` worth of samples from gold (this generator).
+          2. If NER-NER and fewer than `max_pairs` pairs accumulated, identify
+             which rare RELATIONS are missing and request a top-up from the
+             supplementary pool restricted to those missing relations.
+          3. Supplementary picks honor the same `exclude_origin_id` (though for
+             gold mode the main pool's origin space is disjoint anyway).
+
+        If `supplementary_generator` is None this degrades to the plain
+        `generate_by_pairs` call — useful for gold-only eval scenarios.
+        """
+        primary = self.generate_by_pairs(
+            task,
+            min_pairs=min_pairs,
+            max_pairs=max_pairs,
+            exclude_origin_id=exclude_origin_id,
+            prioritize_rare=prioritize_rare,
+        )
+
+        if supplementary_generator is None:
+            return primary
+
+        # Count pairs currently covered by primary, figure headroom
+        def _pair_count(samples):
+            return sum(s.get("output", "").count('"subject":') for s in samples)
+
+        covered_pairs = _pair_count(primary)
+        headroom = max_pairs - covered_pairs
+        if headroom <= 0:
+            return primary
+
+        # Which rare relations are still missing from primary?
+        covered_relations = set()
+        for s in primary:
+            out_str = s.get("output", "")
+            for r in self.RARE_RELATIONS:
+                if f'"{r}"' in out_str:
+                    covered_relations.add(r)
+        missing_rare = self.RARE_RELATIONS - covered_relations
+
+        if not missing_rare:
+            return primary
+
+        # Pull rare-only supplement from the main pool
+        supplement = supplementary_generator.generate_by_pairs(
+            task,
+            min_pairs=0,
+            max_pairs=headroom,
+            exclude_origin_id=exclude_origin_id,
+            prioritize_rare=True,
+            filter_relations=missing_rare,
+        )
+
+        if supplement:
+            primary = list(primary) + list(supplement)
+        return primary
 
     def format(self, samples):
         """

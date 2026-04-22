@@ -39,14 +39,15 @@ def generate_all_prompts(
     tokenizer,
     mode_ratios,
     full_detail_ratio,
-    fewshot_sample_size, 
+    fewshot_sample_size,
     fewshot_min_pairs,
     fewshot_max_pairs,
     prioritize_rare,
-    seed,             
+    seed,
     split_ids_map,
     training_max_length,
-    num_proc=8
+    num_proc=8,
+    gold_fewshot_generator=None,  # Optional: gold pool used as primary, main as supplement
 ):
     """
     DESCRIPTION:
@@ -66,17 +67,38 @@ def generate_all_prompts(
         # FEW-SHOT ACCUMULATOR: Generate one robust example block per task.
         # Pool is already restricted to train-split origins (set in caller),
         # so val/test rows cannot see their own documents as demonstrations.
+        #
+        # Gold-first hybrid:
+        #   If gold_fewshot_generator is provided, draw primarily from gold and
+        #   top up rare-relation coverage from main. This makes demonstrations
+        #   higher quality (human-verified) while still covering rare classes
+        #   the gold set doesn't include. gold dataset is train-only so it
+        #   always sits in the "train" side of split_ids_map and is safe.
+        #
         # prioritize_rare drives task-aware priority:
         #   - NER-NER: prefer chunks containing rare relation labels
         #   - NER-BEE / NER-BEE_TRUE_ONLY: prefer chunks containing "true" labels
         #     (so few-shot isn't all-negative for binary tasks).
-        fs_samples = fewshot_generator.generate_by_pairs(
-            task_name,
-            min_pairs=fewshot_min_pairs,
-            max_pairs=fewshot_max_pairs,
-            prioritize_rare=prioritize_rare,
-        )
+        if gold_fewshot_generator is not None:
+            fs_samples = gold_fewshot_generator.generate_gold_first(
+                task_name,
+                min_pairs=fewshot_min_pairs,
+                max_pairs=fewshot_max_pairs,
+                prioritize_rare=prioritize_rare,
+                supplementary_generator=fewshot_generator,
+            )
+            fs_source = "gold-first (supplemented by main for rare gaps)"
+        else:
+            fs_samples = fewshot_generator.generate_by_pairs(
+                task_name,
+                min_pairs=fewshot_min_pairs,
+                max_pairs=fewshot_max_pairs,
+                prioritize_rare=prioritize_rare,
+            )
+            fs_source = "main-only"
         fs_text_global = fewshot_generator.format(fs_samples) if fs_samples else ""
+        print(f"   Few-shot source for '{task_name}': {fs_source} "
+              f"(samples={len(fs_samples)}, fs_text_len={len(fs_text_global)})")
 
         # Per-row self-demonstration guard: if the current row's origin_id happens to
         # appear inside fs_samples, regenerate a fs_text that excludes that origin.
@@ -84,13 +106,23 @@ def generate_all_prompts(
         demo_origin_ids = {s.get("origin_id") for s in fs_samples if s.get("origin_id")}
         fs_text_per_demo_origin = {}
         for demo_oid in demo_origin_ids:
-            alt_samples = fewshot_generator.generate_by_pairs(
-                task_name,
-                min_pairs=fewshot_min_pairs,
-                max_pairs=fewshot_max_pairs,
-                exclude_origin_id=demo_oid,
-                prioritize_rare=prioritize_rare,
-            )
+            if gold_fewshot_generator is not None:
+                alt_samples = gold_fewshot_generator.generate_gold_first(
+                    task_name,
+                    min_pairs=fewshot_min_pairs,
+                    max_pairs=fewshot_max_pairs,
+                    exclude_origin_id=demo_oid,
+                    prioritize_rare=prioritize_rare,
+                    supplementary_generator=fewshot_generator,
+                )
+            else:
+                alt_samples = fewshot_generator.generate_by_pairs(
+                    task_name,
+                    min_pairs=fewshot_min_pairs,
+                    max_pairs=fewshot_max_pairs,
+                    exclude_origin_id=demo_oid,
+                    prioritize_rare=prioritize_rare,
+                )
             fs_text_per_demo_origin[demo_oid] = (
                 fewshot_generator.format(alt_samples) if alt_samples else ""
             )
@@ -202,13 +234,32 @@ def get_or_generate_sft_dataset(config_path: str = "preprocessing/generate_sft_t
     # --------------------------------------------------------------------------
     print("📌 PHASE 1: Loading JSONL & Classifying...")
     raw_data = []
-    with open(cfg["data"]["input_path"], "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip(): raw_data.append(orjson.loads(line))
-    
-    # Force all IDs to be strings at the source to prevent PyArrow type crashes
-    for i, doc in enumerate(raw_data): 
-        doc["id"] = f"all_{i}" if "id" not in doc else str(doc["id"])
+    # Support either a single `input_path` or a list `input_paths` (used for gold
+    # mode where multiple curated jsonl files are merged).
+    input_paths = cfg["data"].get("input_paths")
+    if input_paths:
+        if isinstance(input_paths, str):
+            input_paths = [input_paths]
+        print(f"   Loading {len(input_paths)} input files")
+        for p in input_paths:
+            with open(p, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip(): raw_data.append(orjson.loads(line))
+            print(f"     {p} → cumulative {len(raw_data)} docs")
+    else:
+        with open(cfg["data"]["input_path"], "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip(): raw_data.append(orjson.loads(line))
+
+    # Force all IDs to be strings at the source to prevent PyArrow type crashes.
+    # Optional prefix (e.g., "gold_") namespaces gold origins so they never collide
+    # with main-data origin_ids in split_ids_map / few-shot guards.
+    origin_prefix = cfg.get("gold_origin_id_prefix", "")
+    for i, doc in enumerate(raw_data):
+        base_id = str(doc.get("id", f"all_{i}"))
+        doc["id"] = f"{origin_prefix}{base_id}" if origin_prefix else base_id
+    if origin_prefix:
+        print(f"   Applied origin_id prefix: {origin_prefix!r}")
             
     dp = DataPreprocessor()
     should_neg = cfg.get("negatives", {}).get("include_no_relationship", False)
@@ -342,6 +393,9 @@ def get_or_generate_sft_dataset(config_path: str = "preprocessing/generate_sft_t
         target_total = int(target_train / 0.7)
         print(f"\n⚖️ PHASE 3: Targeting {target_train} Train samples.")
         print(f"   Total dataset target auto-adjusted to {target_total} (70% train split).")
+    else:
+        # Gold mode (or any unquota mode): skip PHASE 3 entirely — keep everything.
+        print(f"\n⏭️  PHASE 3 skipped (no target_total_training_samples → keeping all chunks)")
 
     div_cfg = gen_cfg.get("diversity", {})
     diversity_enabled = bool(div_cfg.get("enable", True))
@@ -624,30 +678,38 @@ def get_or_generate_sft_dataset(config_path: str = "preprocessing/generate_sft_t
     # NER-NER and NER-BEE buckets) are assigned once based on their first task's
     # split; the same split label is reused so the same doc never crosses splits.
     # --------------------------------------------------------------------------
-    print("\n🔪 PHASE 4: Task-stratified Train/Val/Test Split (70/10/20)...")
+    split_mode = cfg.get("split", {}).get("mode", "stratified")
     random.seed(cfg.get("seed", 42))
     split_ids_map = {}
-    for task_key, chunks in final_data_sources.items():
-        if not chunks:
-            continue
-        task_origins = list({c["origin_id"] for c in chunks})
-        # If an origin was already placed (via another task), reuse that label.
-        already_placed = [oid for oid in task_origins if oid in split_ids_map]
-        new_origins = [oid for oid in task_origins if oid not in split_ids_map]
-        random.shuffle(new_origins)
-        n = len(new_origins)
-        train_end = int(n * 0.7)
-        val_end = int(n * 0.8)
-        split_counts = {"train": 0, "validation": 0, "test": 0}
-        for i, oid in enumerate(new_origins):
-            label = "train" if i < train_end else ("validation" if i < val_end else "test")
-            split_ids_map[oid] = label
-            split_counts[label] += 1
-        reused_counts = {"train": 0, "validation": 0, "test": 0}
-        for oid in already_placed:
-            reused_counts[split_ids_map[oid]] += 1
-        print(f"   {task_key}: {len(task_origins)} origins — new={split_counts}, "
-              f"reused_from_other_task={reused_counts}")
+    if split_mode == "train_only":
+        # Gold mode: every origin goes to train. No val/test — the gold set is too
+        # small to split internally and the main dataset's splits cover evaluation.
+        all_origins = {c["origin_id"] for chunks in final_data_sources.values() for c in chunks}
+        split_ids_map = {oid: "train" for oid in all_origins}
+        print(f"\n🎯 PHASE 4 (train_only): all {len(all_origins)} origins → train split")
+    else:
+        print("\n🔪 PHASE 4: Task-stratified Train/Val/Test Split (70/10/20)...")
+        for task_key, chunks in final_data_sources.items():
+            if not chunks:
+                continue
+            task_origins = list({c["origin_id"] for c in chunks})
+            # If an origin was already placed (via another task), reuse that label.
+            already_placed = [oid for oid in task_origins if oid in split_ids_map]
+            new_origins = [oid for oid in task_origins if oid not in split_ids_map]
+            random.shuffle(new_origins)
+            n = len(new_origins)
+            train_end = int(n * 0.7)
+            val_end = int(n * 0.8)
+            split_counts = {"train": 0, "validation": 0, "test": 0}
+            for i, oid in enumerate(new_origins):
+                label = "train" if i < train_end else ("validation" if i < val_end else "test")
+                split_ids_map[oid] = label
+                split_counts[label] += 1
+            reused_counts = {"train": 0, "validation": 0, "test": 0}
+            for oid in already_placed:
+                reused_counts[split_ids_map[oid]] += 1
+            print(f"   {task_key}: {len(task_origins)} origins — new={split_counts}, "
+                  f"reused_from_other_task={reused_counts}")
 
     # --------------------------------------------------------------------------
     # 🎯 PHASE 5: Prompt Generation
@@ -670,6 +732,44 @@ def get_or_generate_sft_dataset(config_path: str = "preprocessing/generate_sft_t
         allowed_origin_ids=train_origin_ids,
     )
 
+    # Optional: gold HF dataset as the primary few-shot pool (rare gaps supplemented from main).
+    # config:
+    #   fewshot:
+    #     gold_hf_dataset_path: "/app/pred_data/..._gold_v2_hf_dataset"
+    gold_generator = None
+    gold_path = fewshot_cfg.get("gold_hf_dataset_path")
+    if gold_path and os.path.exists(gold_path):
+        print(f"\n🪙 Loading gold few-shot pool from {gold_path}")
+        gold_hf = DatasetDict.load_from_disk(gold_path)
+        gold_train = gold_hf.get("train")
+        if gold_train is not None and len(gold_train) > 0:
+            # Reshape gold DatasetDict("train") into the same {task: [chunks]} dict
+            # shape expected by GenerateFewShotSamples.
+            gold_data_sources = {}
+            for row in gold_train:
+                t = row.get("task")
+                if not t: continue
+                gold_data_sources.setdefault(t, []).append({
+                    "id": row.get("origin_id"),
+                    "origin_id": row.get("origin_id"),
+                    "input": row.get("text", ""),   # already-compiled prompt text
+                    "output": row.get("text", ""),  # also-text; rare-scan uses output field
+                })
+            # Since gold rows store the already-compiled chat-templated string in "text",
+            # we fall back to using that as both input and output for scanning/formatting.
+            # For rare-relation detection the RARE_RELATIONS strings still appear inside
+            # the JSON body embedded in the text, so substring matching works.
+            gold_generator = GenerateFewShotSamples(
+                data_dict=gold_data_sources,
+                seed=fewshot_cfg.get("seed", 42),
+            )
+            print(f"   Gold pool ready: {sum(len(v) for v in gold_data_sources.values())} rows "
+                  f"across tasks {list(gold_data_sources.keys())}")
+        else:
+            print(f"   ⚠️  Gold dataset has no 'train' split — skipping gold few-shot pool")
+    elif gold_path:
+        print(f"   ⚠️  fewshot.gold_hf_dataset_path={gold_path} not found — running main-only")
+
     print("\n📌 PHASE 5: Generating Final Prompts...")
     train_rows, val_rows, test_rows = generate_all_prompts(
         tasks=tasks,
@@ -681,21 +781,24 @@ def get_or_generate_sft_dataset(config_path: str = "preprocessing/generate_sft_t
         tokenizer=tokenizer,
         mode_ratios=cfg.get("mode_ratios", {}),
         full_detail_ratio=cfg.get("mode_ratios", {}).get("full_detailed_ratio", 0.7),
-        fewshot_sample_size=1, 
+        fewshot_sample_size=1,
         fewshot_min_pairs=fewshot_cfg.get("min_pairs", 8),
         fewshot_max_pairs=fewshot_cfg.get("max_pairs", 12),
         prioritize_rare=fewshot_cfg.get("prioritize_rare", True),
         seed=cfg.get("seed", 42),
-        split_ids_map=split_ids_map, 
+        split_ids_map=split_ids_map,
         training_max_length=max_token_threshold,
-        num_proc=num_proc
+        num_proc=num_proc,
+        gold_fewshot_generator=gold_generator,
     )
 
-    ds_dict = DatasetDict({
-        "train": Dataset.from_list(train_rows), 
-        "validation": Dataset.from_list(val_rows), 
-        "test": Dataset.from_list(test_rows)
-    })
+    # Only include splits that actually have rows (train_only mode → train only).
+    splits = {"train": Dataset.from_list(train_rows)}
+    if val_rows:
+        splits["validation"] = Dataset.from_list(val_rows)
+    if test_rows:
+        splits["test"] = Dataset.from_list(test_rows)
+    ds_dict = DatasetDict(splits)
 
     # --------------------------------------------------------------------------
     # 🎯 PHASE 6: Final Token Length Pruning
@@ -721,9 +824,18 @@ def get_or_generate_sft_dataset(config_path: str = "preprocessing/generate_sft_t
     print("\n💾 Saving Hugging Face DatasetDict to disk...")
     ds_dict.save_to_disk(hf_dataset_path)
     print(f"✅ Successfully saved dataset splits to: {hf_dataset_path}")
-    print(f"   Train: {len(ds_dict['train'])} | Val: {len(ds_dict['validation'])} | Test: {len(ds_dict['test'])}")
+    split_sizes = " | ".join(f"{k.capitalize()}: {len(ds_dict[k])}" for k in ds_dict)
+    print(f"   {split_sizes}")
 
     return ds_dict
 
 if __name__ == "__main__":
-    get_or_generate_sft_dataset()
+    import argparse
+    parser = argparse.ArgumentParser(description="Build SFT training data.")
+    parser.add_argument(
+        "--config",
+        default="preprocessing/generate_sft_training_data_config.yaml",
+        help="Path to generation config YAML (main or gold variant).",
+    )
+    cli_args = parser.parse_args()
+    get_or_generate_sft_dataset(config_path=cli_args.config)
