@@ -604,53 +604,128 @@ def get_or_generate_sft_dataset(config_path: str = "preprocessing/generate_sft_t
 
                 state = _SamplerState(quota_per_task, rel_floor, group_floor, head_caps)
 
-                # ---- Pass A: keep priority origins (greedy by coverage within priority) ----
-                prio_list = list(priority_ids)
-                random.shuffle(prio_list)
-                def _score_coverage(oid, st):
-                    p = origins[oid]
-                    return st.coverage_gain(p) - 2.0 * st.head_overflow_penalty(p) * st.chunk_count
-                while prio_list and state.room_left() > 0:
-                    prio_list.sort(key=lambda oid: _score_coverage(oid, state), reverse=True)
-                    picked = prio_list[0]
-                    if origins[picked]["chunk_count"] > state.room_left():
-                        prio_list.pop(0)
-                        continue
-                    state.add(picked, origins[picked])
-                    prio_list.pop(0)
+                # ============================================================
+                # Optimized 4-pass greedy (O(N log N) total)
+                #
+                # Prior version re-sorted the candidate list inside every while
+                # iteration → O(N² log N). At 95k docs that made PHASE 3
+                # effectively non-terminating.
+                #
+                # Fix (codex advisory + rare-preservation safeguard):
+                #   - Pass A0: rare-first bootstrap — for each rare relation,
+                #              force-keep the smallest origin that carries it.
+                #              This protects ultra-rare labels (exposure ≤ 10)
+                #              that frozen scoring tends to under-weight.
+                #   - Pass A:  remaining priority origins (random order, no sort).
+                #   - Pass B:  common coverage greedy with frozen score at
+                #              Pass A end. Live skip (continue, NOT break) when
+                #              an origin's remaining gain has dropped to 0.
+                #   - Pass C:  novelty fill with two-tier overflow gate
+                #              (safe ≤ 0.005, deferred ≤ 0.01). 0.1 slack from
+                #              earlier draft was far too loose per codex review.
+                # ============================================================
 
-                # ---- Pass B: coverage-driven greedy from common ----
-                remaining_common = [oid for oid in common_ids if origins[oid]["chunk_count"] <= state.room_left()]
-                random.shuffle(remaining_common)
-                # Iterate while floors unmet and quota available
-                while state.room_left() > 0 and (
-                    any(v > 0 for v in state.rel_need.values()) or
-                    any(v > 0 for v in state.group_need.values())
-                ):
-                    # Candidate pool: origins with positive coverage gain
-                    candidates = [oid for oid in remaining_common if origins[oid]["chunk_count"] <= state.room_left()]
-                    if not candidates:
+                def _score_coverage_snapshot(oid):
+                    p = origins[oid]
+                    return state.coverage_gain(p) - 2.0 * state.head_overflow_penalty(p) * state.chunk_count
+
+                def _score_fill_snapshot(oid):
+                    p = origins[oid]
+                    return state.novelty(p) - 3.0 * state.head_overflow_penalty(p) * max(1, state.chunk_count)
+
+                # ---- Pass A0: rare-first bootstrap ----
+                # Walk every relation we care about (rel_floor ∪ dynamic_priority),
+                # sorted by global scarcity. For each, grab the smallest-chunk
+                # origin that carries it. O(R × N) total where R ≈ #unique rare.
+                rare_targets = set(rel_floor.keys()) | dynamic_priority
+                rare_targets_sorted = sorted(
+                    rare_targets, key=lambda r: rel_exposure.get(r, 0)
+                )
+                for rel in rare_targets_sorted:
+                    if state.room_left() <= 0:
                         break
-                    candidates.sort(key=lambda oid: _score_coverage(oid, state), reverse=True)
-                    best = candidates[0]
-                    if state.coverage_gain(origins[best]) <= 0:
-                        break  # no more coverage improvement possible
-                    state.add(best, origins[best])
-                    remaining_common.remove(best)
-
-                # ---- Pass C: fill remaining quota with novelty − head penalty ----
-                def _score_fill(oid, st):
-                    p = origins[oid]
-                    return st.novelty(p) - 3.0 * st.head_overflow_penalty(p) * max(1, st.chunk_count)
-                pool = [oid for oid in remaining_common if origins[oid]["chunk_count"] <= state.room_left()]
-                while pool and state.room_left() > 0:
-                    pool.sort(key=lambda oid: _score_fill(oid, state), reverse=True)
-                    best = pool[0]
-                    if origins[best]["chunk_count"] > state.room_left():
-                        pool.pop(0)
+                    # Already covered by a previously-selected origin?
+                    if any(rel in origins[oid]["rel_labels"] for oid in state.selected):
                         continue
-                    state.add(best, origins[best])
-                    pool.pop(0)
+                    carriers = [
+                        oid for oid in origins
+                        if rel in origins[oid]["rel_labels"]
+                        and oid not in state.selected
+                        and origins[oid]["chunk_count"] <= state.room_left()
+                    ]
+                    if not carriers:
+                        continue
+                    # Prefer the smallest carrier — keeps quota headroom for breadth.
+                    carriers.sort(key=lambda oid: origins[oid]["chunk_count"])
+                    state.add(carriers[0], origins[carriers[0]])
+
+                # ---- Pass A: remaining priority origins ----
+                # Priority = static rare + dynamic rare carriers. Most already
+                # added by Pass A0; this pass mops up any unclaimed ones.
+                prio_list = [oid for oid in priority_ids if oid not in state.selected]
+                random.shuffle(prio_list)
+                for oid in prio_list:
+                    if state.room_left() <= 0:
+                        break
+                    p = origins[oid]
+                    if p["chunk_count"] > state.room_left():
+                        continue
+                    state.add(oid, p)
+
+                # ---- Pass B: common origins, frozen score at Pass A end ----
+                common_list = [oid for oid in common_ids if origins[oid]["chunk_count"] <= quota_per_task]
+                random.shuffle(common_list)
+                pass_b_scores = {oid: _score_coverage_snapshot(oid) for oid in common_list}
+                common_list.sort(key=lambda oid: -pass_b_scores[oid])
+                for oid in common_list:
+                    if state.room_left() <= 0:
+                        break
+                    # live skip: if this origin's relations are already fully covered, skip.
+                    p = origins[oid]
+                    if p["chunk_count"] > state.room_left():
+                        continue
+                    if state.coverage_gain(p) <= 0:
+                        continue                                # stale low-gain → try next; DON'T break
+                    state.add(oid, p)
+                    # Early termination only when every floor is satisfied.
+                    if not any(v > 0 for v in state.rel_need.values()) and \
+                       not any(v > 0 for v in state.group_need.values()):
+                        break
+
+                # ---- Pass C: novelty fill with two-tier overflow gating ----
+                selected_set = state.selected
+                remaining = [oid for oid in common_ids
+                             if oid not in selected_set
+                             and origins[oid]["chunk_count"] <= quota_per_task]
+                random.shuffle(remaining)
+                pass_c_scores = {oid: _score_fill_snapshot(oid) for oid in remaining}
+                remaining.sort(key=lambda oid: -pass_c_scores[oid])
+
+                SAFE_OVERFLOW = 0.005   # pp above cap still acceptable in safe tier
+                DEFER_OVERFLOW = 0.01   # looser tier tried only if quota still not full
+                deferred = []
+                for oid in remaining:
+                    if state.room_left() <= 0:
+                        break
+                    p = origins[oid]
+                    if p["chunk_count"] > state.room_left():
+                        continue
+                    overflow = state.head_overflow_penalty(p)
+                    if overflow <= SAFE_OVERFLOW:
+                        state.add(oid, p)
+                    elif overflow <= DEFER_OVERFLOW:
+                        deferred.append(oid)
+                    # origins beyond DEFER_OVERFLOW are dropped (would break head cap).
+
+                # Second sweep on deferred tier if still room.
+                for oid in deferred:
+                    if state.room_left() <= 0:
+                        break
+                    p = origins[oid]
+                    if p["chunk_count"] > state.room_left():
+                        continue
+                    if state.head_overflow_penalty(p) <= DEFER_OVERFLOW:
+                        state.add(oid, p)
 
                 filtered = [c for c in chunks if c["origin_id"] in state.selected]
 
