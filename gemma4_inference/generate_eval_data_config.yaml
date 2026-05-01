@@ -1,0 +1,71 @@
+# ================================================
+# Eval-Only Preprocessing Config (Gemma4)
+# Single task + single mode, no train/val/test split,
+# few-shot DISABLED regardless of mode flag.
+# ================================================
+
+# ---------- Model ----------
+# Split tag & chat template are auto-detected from this path
+# (qwen / gemma3 / gemma4 substring match → gemma4 stop token <turn|>).
+model:
+  name: "/app/host/models/gemma4-E4B-it/"
+
+# ---------- Data ----------
+# All eval stages (preprocess / vLLM inference / metadata merge) share these paths.
+data:
+  # 평가 입력 JSONL (metadata lookup source와 반드시 같아야 함 — origin_id 매칭용)
+  input_path: "/app/host/datasets/en_ner2ner_500.jsonl"
+  # Preprocessing output = vLLM inference input = merge step's HF dataset
+  output_path: "/app/pred_data/eval_gemma4_no_fewshot_hf"
+
+# ---------- Inference ----------
+inference:
+  # vLLM이 생성한 predictions JSONL. merge 단계에서도 이 경로를 읽음.
+  predictions_path: "/app/pred_data/vllm_predictions_gemma4.jsonl"
+
+  # 학습된 LoRA adapter 경로. null이면 base model만 사용.
+  # 학습 OUTPUT_PATH(`/app/train_result/gemma4-e4b_sft{TAG}`)와 동일하게 채울 것.
+  # 예시 TAG: "_v2_rank8_alpha16_lr0.0001_batch8_ep3"
+  # lora_path: "/app/train_result/gemma4-e4b_sft_v2_rank8_alpha16_lr0.0001_batch8_ep3"
+  lora_path: null
+
+  # 학습 시 LoRA rank와 일치해야 함 (sft_gemma4.py의 RANK=8)
+  max_lora_rank: 8
+  # vLLM GPU 메모리 점유율. 다른 프로세스와 공유 시 낮추기.
+  gpu_memory_utilization: 0.9
+
+# ---------- Merge ----------
+merge:
+  output_path: "/app/pred_data/parsed_output_with_metadata_gemma4.jsonl"
+  # Eval 시 ground_truth 포함 여부 (False면 pure inference 모드)
+  eval_mode: true
+
+# ---------- Task & Mode (SINGLE selection) ----------
+# task:  NER_NER / NER_BEE
+task: "NER_NER"
+
+# mode:  system_only / full_detailed / full_summary / no_fewshot / reasoning
+# NOTE: few-shot is skipped regardless of this mode's few_shot flag.
+# If the trained model was trained WITH few-shot (full_*), expect format mismatch.
+# Recommended: "no_fewshot" or "system_only".
+mode: "no_fewshot"
+
+# ---------- Token budget ----------
+training_max_length: 8192
+
+# ---------- Chunking ----------
+generation:
+  num_proc: 8
+  chunk_thresholds: [12, 10, 8, 6, 4]
+
+# ---------- Negative relations ----------
+negatives:
+  include_no_relationship: true
+
+# ---------- Prompt template ----------
+# 메인 학습과 동일한 프롬프트 템플릿 (false 정규화 등 v2 수정 반영).
+prompt:
+  yaml_path: "./sft_data_generation_prompts_edited.yaml"
+
+# ---------- Misc ----------
+seed: 42
