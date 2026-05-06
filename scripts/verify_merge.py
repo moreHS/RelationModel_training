@@ -41,6 +41,45 @@ def find_weight(directory: str, key: str):
     return None
 
 
+def list_all_keys(directory: str):
+    """Return the union of every tensor key across every safetensors shard."""
+    from safetensors import safe_open
+    all_keys = set()
+    for fname in sorted(f for f in os.listdir(directory) if f.endswith(".safetensors")):
+        path = os.path.join(directory, fname)
+        with safe_open(path, framework="pt") as h:
+            all_keys.update(h.keys())
+    return all_keys
+
+
+def auto_discover_key(base_dir: str, merged_dir: str):
+    """
+    Find a weight key that exists in BOTH directories and is suitable for diff
+    sanity (q_proj / gate_proj in an early decoder layer). Returns None if nothing
+    matches the heuristic.
+    """
+    base_keys = list_all_keys(base_dir)
+    merged_keys = list_all_keys(merged_dir)
+    common = base_keys & merged_keys
+    # Prefer q_proj in the lowest-numbered layer; fall back to gate_proj, k_proj, etc.
+    preferred_substrings = (
+        ".self_attn.q_proj.weight",
+        ".mlp.gate_proj.weight",
+        ".self_attn.k_proj.weight",
+        ".self_attn.v_proj.weight",
+    )
+    for needle in preferred_substrings:
+        # Pick the smallest layer index match for determinism
+        matches = sorted(k for k in common if needle in k and ".layers." in k)
+        if matches:
+            # Prefer "layers.0." if present, else first match
+            layer0 = [k for k in matches if ".layers.0." in k]
+            return (layer0 or matches)[0]
+    # Last resort: any common key that contains "layers" and "weight"
+    matches = sorted(k for k in common if ".layers." in k and k.endswith(".weight"))
+    return matches[0] if matches else None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base_dir", required=True, help="Original base model directory.")
@@ -86,13 +125,26 @@ def main():
               f"merged={'found' if m is not None else 'missing'}")
 
     if matched_key is None:
+        # Explicit candidates didn't match — fall back to auto-discovery.
         print(
-            "❌ Could not find any of the candidate weight keys in BOTH directories.\n"
-            "   Pass --keys explicitly with names from your model.\n"
-            f"   Tried: {args.keys}",
+            "ℹ️  Hardcoded candidate keys not found in BOTH dirs. "
+            "Auto-discovering a suitable weight key...",
             file=sys.stderr,
         )
-        sys.exit(2)
+        discovered = auto_discover_key(args.base_dir, args.merged_dir)
+        if discovered is None:
+            print(
+                "❌ Auto-discovery failed — no common (q_proj / gate_proj / layer) "
+                "weight found in BOTH directories.\n"
+                "   Pass --keys explicitly with names from your model.\n"
+                f"   Tried hardcoded list: {args.keys}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        matched_key = discovered
+        base_t = find_weight(args.base_dir, matched_key)
+        merged_t = find_weight(args.merged_dir, matched_key)
+        print(f"   auto-discovered: {matched_key}", file=sys.stderr)
 
     diff = (base_t.float() - merged_t.float()).abs().mean().item()
     base_norm = base_t.float().abs().mean().item()
