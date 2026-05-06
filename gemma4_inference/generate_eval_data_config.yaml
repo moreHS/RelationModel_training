@@ -7,8 +7,20 @@
 # ---------- Model ----------
 # Split tag & chat template are auto-detected from this path
 # (qwen / gemma3 / gemma4 substring match → gemma4 stop token <turn|>).
+#
+# Gemma4 + vLLM 주의: vLLM은 Gemma4ForConditionalGeneration LoRA를 아직 미지원
+# (Issue #39246, May 2026 기준 미해결). 그래서 LoRA adapter를 base에 미리 merge한
+# 단일 16bit 체크포인트를 base 모델로 로드해야 함.
+#
+# 워크플로:
+#   1) python3 -m scripts.merge_lora_to_base --lora_path <학습 OUTPUT_PATH>
+#   2) 아래 model.name을 merged 디렉토리(<lora_path>_merged_16bit)로 변경
+#   3) inference.lora_path는 null로 둠
+#
+# 주석 처리된 base 경로는 사전 학습 직후 base만으로 sanity test할 때만 사용.
 model:
-  name: "/app/host/models/gemma4-E4B-it/"
+  # name: "/app/host/models/gemma4-E4B-it/"   # base only (LoRA 없이 추론)
+  name: "/app/train_result/gemma4-e4b_sft_v2_rank8_alpha16_lr0.0001_batch8_ep3_0.05_merged_16bit"
 
 # ---------- Data ----------
 # All eval stages (preprocess / vLLM inference / metadata merge) share these paths.
@@ -23,13 +35,14 @@ inference:
   # vLLM이 생성한 predictions JSONL. merge 단계에서도 이 경로를 읽음.
   predictions_path: "/app/pred_data/vllm_predictions_gemma4.jsonl"
 
-  # 학습된 LoRA adapter 경로. null이면 base model만 사용.
-  # 학습 OUTPUT_PATH(`/app/train_result/gemma4-e4b_sft{TAG}`)와 동일하게 채울 것.
-  # 예시 TAG: "_v2_rank8_alpha16_lr0.0001_batch8_ep3"
-  # lora_path: "/app/train_result/gemma4-e4b_sft_v2_rank8_alpha16_lr0.0001_batch8_ep3"
+  # ⚠️ Gemma4 + vLLM에서는 LoRA를 별도 로드하지 않고 model.name이 가리키는 merged
+  # 체크포인트로 통째로 로드. 이 값은 항상 null로 유지.
+  # (vLLM Issue #39246 — Gemma4ForConditionalGeneration LoRA 미지원)
+  # Llama/Qwen처럼 LoRA가 정식 지원되는 모델군에서는 이 값을 활성화 가능.
   lora_path: null
 
-  # 학습 시 LoRA rank와 일치해야 함 (sft_gemma4.py의 RANK=8)
+  # max_lora_rank는 lora_path=null이면 사용되지 않으나, 향후 LoRA 활성 시 학습
+  # rank와 일치해야 함 (sft_gemma4.py의 RANK=8).
   max_lora_rank: 8
   # vLLM GPU 메모리 점유율. 다른 프로세스와 공유 시 낮추기.
   gpu_memory_utilization: 0.9
